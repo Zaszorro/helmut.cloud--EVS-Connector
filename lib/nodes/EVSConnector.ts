@@ -50,9 +50,10 @@ type JobDTO = {
   id?: string;
   name?: string;
   metadata?: Metadata[];
-  targetName?: string;          // string per Swagger
-  targetId?: string;            // string per Swagger
-  xsquarePriority?: string;     // string per Swagger
+  marker?: any[];
+  targetName?: string;
+  targetId?: string;
+  xsquarePriority?: string;
   metadatasetName?: string;
   fileToTransfer?: string;
 };
@@ -62,6 +63,7 @@ function clean<T extends Record<string, any>>(obj: T): T {
   for (const [k, v] of Object.entries(obj)) {
     if (v === undefined || v === null) continue;
     if (typeof v === "string" && v.trim() === "") continue;
+    if (Array.isArray(v) && v.length === 0) continue;
     out[k] = v;
   }
   return out as T;
@@ -76,7 +78,7 @@ export default class EVSConnector extends Node {
     kind: "NODE",
     category: "Transfer",
     color: "node-aquaGreen",
-    version: { major: 1, minor: 0, patch: 4, changelog: ["Strict Swagger types (strings only), removed numeric coercion"] },
+    version: { major: 1, minor: 0, patch: 5, changelog: ["Send strict JSON JobDTO, omit empty fields/arrays, set charset in Content-Type"] },
     author: {
       name: "Code Copilot",
       company: "Community",
@@ -190,6 +192,7 @@ export default class EVSConnector extends Node {
     const url = `${baseUrl}/evsconn/v1/job`;
     const name = fileToTransfer.split(/[\\/]/).pop() || fileToTransfer;
 
+    const metadata = this.parseMetadata(metadataRaw);
     const payload: JobDTO = clean({
       name,
       targetName,
@@ -197,14 +200,16 @@ export default class EVSConnector extends Node {
       xsquarePriority,
       metadatasetName,
       fileToTransfer,
-      metadata: this.parseMetadata(metadataRaw),
+      metadata: metadata.length ? metadata : undefined,
     });
 
     try {
       const res = await axios.post(url, payload, {
-        headers: { "Content-Type": "application/json", Accept: "application/json" },
+        // Explicit charset avoids 415 on strict servers
+        headers: { "Content-Type": "application/json; charset=utf-8", Accept: "application/json" },
         validateStatus: () => true,
         timeout: 60000,
+        transformRequest: [(data) => JSON.stringify(data)],
       });
 
       this.wave.outputs.setOutput(OutputName.STATUS, Number(res.status));
