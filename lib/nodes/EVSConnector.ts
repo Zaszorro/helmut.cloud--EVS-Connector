@@ -1,6 +1,6 @@
 // lib/nodes/EVSConnector.ts
 import Node from "../Node";
-import axios from "axios";
+import axios, { AxiosError } from "axios";
 
 type InputType = "STRING" | "STRING_PASSWORD" | "NUMBER" | "BOOLEAN";
 type OutputType = "NUMBER" | "STRING" | "STRING_MAP" | "STRING_ARRAY";
@@ -10,9 +10,9 @@ enum InputName {
   TARGET_NAME = "Target Name",
   TARGET_ID = "TargetID",
   XSQUARE_PRIORITY = "XSquare priority",
-  METADATASET_NAME = "Meadats set name", // keep exact label as provided to avoid breaking saved streams
+  METADATASET_NAME = "Meadats set name", // keep exact label
   FILEPATH = "filepath",
-  METADATA = "Metadaten", // keep exact label as provided to match existing streams; description below is English
+  METADATA = "Metadaten", // keep exact label
 }
 
 enum OutputName {
@@ -41,6 +41,7 @@ function prettyBody(data: any, headers: any): string {
 
 type Metadata = {
   id?: string;
+  name?: string;
   value?: string;
   values?: string[];
 };
@@ -50,11 +51,25 @@ type JobDTO = {
   name?: string;
   metadata?: Metadata[];
   targetName?: string;
-  targetId?: string;
-  xsquarePriority?: string;
+  targetId?: string | number;
+  xsquarePriority?: string | number;
   metadatasetName?: string;
   fileToTransfer?: string;
 };
+
+function isDigitsOnly(v: string): boolean {
+  return !!v && /^[0-9]+$/.test(v);
+}
+
+function clean<T extends Record<string, any>>(obj: T): T {
+  const out: Record<string, any> = {};
+  for (const [k, v] of Object.entries(obj)) {
+    if (v === undefined || v === null) continue;
+    if (typeof v === "string" && v.trim() === "") continue;
+    out[k] = v;
+  }
+  return out as T;
+}
 
 export default class EVSConnector extends Node {
   specification = {
@@ -65,7 +80,7 @@ export default class EVSConnector extends Node {
     kind: "NODE",
     category: "Transfer",
     color: "node-aquaGreen",
-    version: { major: 1, minor: 0, patch: 1, changelog: ["English descriptions & messages"] },
+    version: { major: 1, minor: 0, patch: 2, changelog: ["Stricter payload validation & better error messages"] },
     author: {
       name: "Code Copilot",
       company: "Community",
@@ -95,9 +110,9 @@ export default class EVSConnector extends Node {
       },
       {
         name: InputName.XSQUARE_PRIORITY,
-        description: "XSquare priority (optional).",
+        description: "XSquare priority (optional). Accepts numeric or string values.",
         type: "STRING" as InputType,
-        example: "HIGH",
+        example: "1",
         mandatory: false,
       },
       {
@@ -116,7 +131,7 @@ export default class EVSConnector extends Node {
       },
       {
         name: InputName.METADATA,
-        description: "Metadata as JSON (array/object) or as lines in the format key=value;key2=value2.",
+        description: "Metadata as JSON (array/object) or as lines: key=value;key2=value2.",
         type: "STRING" as InputType,
         example: "title=Clip 01;show=Sports",
         mandatory: false,
@@ -139,14 +154,14 @@ export default class EVSConnector extends Node {
       const parsed = JSON.parse(txt);
       if (Array.isArray(parsed)) return parsed as Metadata[];
       if (parsed && typeof parsed === "object") {
-        return Object.entries(parsed as Record<string, string>).map(([k, v]) => ({ id: k, value: String(v) }));
+        return Object.entries(parsed as Record<string, string>).map(([k, v]) => ({ id: k, name: k, value: String(v) }));
       }
     } catch {}
     const out: Metadata[] = [];
     const parts = txt.split(/[\r\n;]+/).map((p) => p.trim()).filter(Boolean);
     for (const p of parts) {
       const m = p.match(/^\s*([^=:#]+)\s*[:=]\s*(.*)\s*$/);
-      if (m) out.push({ id: m[1].trim(), value: m[2].trim() });
+      if (m) out.push({ id: m[1].trim(), name: m[1].trim(), value: m[2].trim() });
     }
     return out;
   }
@@ -165,48 +180,69 @@ export default class EVSConnector extends Node {
 
     const baseUrl = normalizeBase(String(this.wave.inputs.getInputValueByInputName(InputName.HOST_URL) ?? ""));
     const targetName = String(this.wave.inputs.getInputValueByInputName(InputName.TARGET_NAME) ?? "").trim();
-    const targetId = String(this.wave.inputs.getInputValueByInputName(InputName.TARGET_ID) ?? "").trim();
-    const xsquarePriority = String(this.wave.inputs.getInputValueByInputName(InputName.XSQUARE_PRIORITY) ?? "").trim();
+    const targetIdStr = String(this.wave.inputs.getInputValueByInputName(InputName.TARGET_ID) ?? "").trim();
+    const priorityStr = String(this.wave.inputs.getInputValueByInputName(InputName.XSQUARE_PRIORITY) ?? "").trim();
     const metadatasetName = String(this.wave.inputs.getInputValueByInputName(InputName.METADATASET_NAME) ?? "").trim();
     const fileToTransfer = String(this.wave.inputs.getInputValueByInputName(InputName.FILEPATH) ?? "").trim();
     const metadataRaw = String(this.wave.inputs.getInputValueByInputName(InputName.METADATA) ?? "");
 
     if (!baseUrl) throw new Error("HOST URL is required");
     if (!targetName) throw new Error("Target Name is required");
-    if (!targetId) throw new Error("TargetID is required");
+    if (!targetIdStr) throw new Error("TargetID is required");
     if (!fileToTransfer) throw new Error("filepath is required");
+
+    const targetId: string | number = isDigitsOnly(targetIdStr) ? Number(targetIdStr) : targetIdStr;
+    const xsquarePriority: string | number | undefined =
+      priorityStr ? (isDigitsOnly(priorityStr) ? Number(priorityStr) : priorityStr) : undefined;
 
     const url = `${baseUrl}/evsconn/v1/job`;
     const name = fileToTransfer.split(/[\\/]/).pop() || fileToTransfer;
 
-    const payload: JobDTO = {
+    const payload: JobDTO = clean({
       name,
       targetName,
       targetId,
-      xsquarePriority: xsquarePriority || undefined,
-      metadatasetName: metadatasetName || undefined,
+      xsquarePriority,
+      metadatasetName,
       fileToTransfer,
       metadata: this.parseMetadata(metadataRaw),
-    };
-
-    const res = await axios.post(url, payload, {
-      headers: { "Content-Type": "application/json" },
-      validateStatus: () => true,
-      timeout: 60000,
     });
 
-    this.wave.outputs.setOutput(OutputName.STATUS, Number(res.status));
-    this.wave.outputs.setOutput(OutputName.HEADERS, res.headers as any);
-    this.wave.outputs.setOutput(OutputName.BODY, prettyBody(res.data, res.headers));
-    this.wave.outputs.setOutput(OutputName.RUN_TIME, Date.now() - started);
-
     try {
-      const jobId = this.extractJobId(res.data);
-      this.wave.outputs.setOutput(OutputName.JOB_ID, jobId);
-    } catch {}
+      const res = await axios.post(url, payload, {
+        headers: { "Content-Type": "application/json", Accept: "application/json" },
+        validateStatus: () => true,
+        timeout: 60000,
+      });
 
-    if (res.status >= 400) {
-      throw new Error(`HTTP ${res.status} POST ${url}`);
+      this.wave.outputs.setOutput(OutputName.STATUS, Number(res.status));
+      this.wave.outputs.setOutput(OutputName.HEADERS, res.headers as any);
+      this.wave.outputs.setOutput(OutputName.BODY, prettyBody(res.data, res.headers));
+      this.wave.outputs.setOutput(OutputName.RUN_TIME, Date.now() - started);
+
+      try {
+        const jobId = this.extractJobId(res.data);
+        this.wave.outputs.setOutput(OutputName.JOB_ID, jobId);
+      } catch {}
+
+      if (res.status >= 400) {
+        const msg =
+          typeof res.data === "string"
+            ? res.data
+            : JSON.stringify(res.data, null, 2);
+        this.wave.logger.error(`EVS Connector error ${res.status} — response: ${msg}`);
+        throw new Error(`HTTP ${res.status} POST ${url}`);
+      }
+    } catch (e) {
+      const ax = e as AxiosError;
+      const status = ax.response?.status;
+      if (status) this.wave.outputs.setOutput(OutputName.STATUS, Number(status));
+      if (ax.response) {
+        this.wave.outputs.setOutput(OutputName.HEADERS, ax.response.headers as any);
+        this.wave.outputs.setOutput(OutputName.BODY, prettyBody(ax.response.data, ax.response.headers));
+      }
+      this.wave.outputs.setOutput(OutputName.RUN_TIME, Date.now() - started);
+      throw e;
     }
   }
 }
