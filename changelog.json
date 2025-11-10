@@ -1,4 +1,15 @@
 [ {
+    "version": "1.0.2",
+    "date": "2025-11-10",
+    "changes": [
+      {
+        "description": "For your first release, just update the date above and rename this line to 'Initial release'",
+        "type": "Features",
+        "breaking": false
+      }
+    ]
+  },
+  {
     "version": "1.0.1",
     "date": "2025-11-10",
     "changes": [

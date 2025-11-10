@@ -74,7 +74,7 @@ jobs:
           minimum_engine_version: ${{ steps.catalog-info.outputs.minimumEngineVersion }}
           version: ${{ steps.catalog-version.outputs.version }}
           source_dir: ${{ github.workspace }}/upload
-          dest_dir: "NodeKitCatalogs/Cosmo"
+          dest_dir: "NodeKitCatalogs/EVS-Connector"
           on_fail: delete
 
       - name: Print catalog registry URL
