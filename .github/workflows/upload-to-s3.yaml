@@ -1,0 +1,81 @@
+name: Upload catalog to S3
+
+on:
+  push:
+    tags:
+      - v*
+
+jobs:
+  upload-catalog:
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v3
+
+      - name: Use Node.js LTS
+        uses: actions/setup-node@v4
+        with:
+          node-version: lts/*
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Bundle
+        run: npm run bundle
+
+      - name: Aggregate node specifications
+        run: npm run build
+
+      - name: Extract catalog information
+        id: catalog-info
+        run: |
+          echo "name=$(node -e 'console.log(require("./bundle.js").default.name)')" >> "$GITHUB_OUTPUT"
+          echo "description=$(node -e 'console.log(require("./bundle.js").default.description)')" >> "$GITHUB_OUTPUT"
+          echo "logoUrl=$(node -e 'console.log(require("./bundle.js").default.logoUrl)')" >> "$GITHUB_OUTPUT"
+          echo "minimumEngineVersion=$(node -e 'console.log(require("./bundle.js").default.minimumEngineVersion)')" >> "$GITHUB_OUTPUT"
+
+      - name: Extract version from tag and remove "v" prefix
+        id: catalog-version
+        run: |
+          tag=${{ github.ref_name }}
+          if [[ $tag != v* ]]; then
+            echo "Tag does not start with 'v'. Failing the workflow."
+            exit 1
+          fi
+          version=${tag:1}
+          if [ -z $version ]; then version="0.0.0"; fi
+          echo "version=$version" >> $GITHUB_OUTPUT
+
+      - name: Check changelog and convert to correct format
+        run: |
+          node scripts/check-changelog.mjs ${{ steps.catalog-version.outputs.version }}
+          node scripts/convert-changelog.mjs
+
+      - name: Setup upload folder
+        run: |
+          mkdir -p upload/docs
+          cp ./bundle.js ./specification.json upload/
+          cp ./changelog-converted.json upload/changelog.json
+          find ${{ github.workspace }}/lib/nodes -type f -name '*.md' -exec cp {} ${{ github.workspace }}/upload/docs/ \;
+
+      - name: Upload catalog and update registry
+        id: upload
+        uses: moovit-sp-gmbh/hcloud-catalog-upload-action@v1.1.0
+        with:
+          endpoint: <S3 endpoint>
+          bucket: <name of your S3 bucket>
+          public_endpoint: <S3 public read endpoint for the specified bucket>
+          region: <region of your S3 bucket>
+          access_key_id: ${{ secrets.<secret set in the GH repo> }}
+          secret_access_key: ${{ secrets.<secret set in the GH repo> }}
+          name: ${{ steps.catalog-info.outputs.name }}
+          description: ${{ steps.catalog-info.outputs.description }}
+          logo: ${{ steps.catalog-info.outputs.logoUrl }}
+          minimum_engine_version: ${{ steps.catalog-info.outputs.minimumEngineVersion }}
+          version: ${{ steps.catalog-version.outputs.version }}
+          source_dir: ${{ github.workspace }}/upload
+          dest_dir: "<your path>"
+          on_fail: delete
+
+      - name: Print catalog registry URL
+        run: echo ${{ steps.upload.outputs.url }}/index.json

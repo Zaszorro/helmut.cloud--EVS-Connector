@@ -1,0 +1,90 @@
+{
+    "name": "helmut-cloud-catalog",
+    "version": "1.0.0",
+    "description": "Base for node catalogs of the helmut.cloud platform",
+    "main": "index.js",
+    "directories": {
+        "lib": "lib"
+    },
+    "scripts": {
+        "bundle": "esbuild index.ts --bundle --format=cjs --platform=node --outfile=bundle.js",
+        "bundle:debug": "esbuild index.ts --sourcemap --bundle --format=cjs --platform=node --outfile=bundle.js",
+        "build": "node scripts/build.mjs ../bundle.js",
+        "debug": "npm run bundle:debug && node scripts/debug.mjs",
+        "spec": "npm run bundle && node scripts/spec.mjs",
+        "link": "curl \"http://localhost:6968/api/agent/v1/modules/dev-wave/wave/debug?waveNodeFolder=${PWD// /%20}\"",
+        "lint": "npx eslint",
+        "format": "npx prettier . --write",
+        "test": "jest"
+    },
+    "repository": {
+        "type": "git",
+        "url": "git+https://github.com/moovit-sp-gmbh/helmut.cloud-catalog.git"
+    },
+    "keywords": [
+        "catalog",
+        "helmut.cloud",
+        "template",
+        "blueprint"
+    ],
+    "author": "MoovIT Software Products GmbH",
+    "license": "ISC",
+    "bugs": {
+        "url": "https://github.com/moovit-sp-gmbh/helmut.cloud-catalog/issues"
+    },
+    "homepage": "https://github.com/moovit-sp-gmbh/helmut.cloud-catalog#readme",
+    "dependencies": {
+        "axios": "^1.9.0",
+        "hcloud-sdk": "^16.0.0",
+        "js-yaml": "^4.1.0",
+        "tar": "^7.4.3",
+        "wave-engine": "^2.0.1"
+    },
+    "devDependencies": {
+        "@eslint/js": "^9.27.0",
+        "@types/jest": "^29.5.14",
+        "@types/js-yaml": "^4.0.9",
+        "@types/node": "^22.15.21",
+        "@types/tar": "^6.1.13",
+        "chalk": "^5.4.1",
+        "esbuild": "^0.25.1",
+        "eslint": "^9.27.0",
+        "globals": "^16.1.0",
+        "prettier": "3.5.3",
+        "ts-jest": "^29.3.0",
+        "typescript": "^5.8.3",
+        "typescript-eslint": "^8.32.1"
+    },
+    "prettier": {
+        "tabWidth": 4,
+        "printWidth": 140,
+        "overrides": [
+            {
+                "files": [
+                    "*.js",
+                    "*.mjs",
+                    "*.ts"
+                ],
+                "options": {
+                    "trailingComma": "es5"
+                }
+            },
+            {
+                "files": [
+                    "*.yaml"
+                ],
+                "options": {
+                    "tabWidth": 2
+                }
+            }
+        ]
+    },
+    "pnpm": {
+        "ignoredBuiltDependencies": [
+            "esbuild"
+        ],
+        "onlyBuiltDependencies": [
+            "esbuild"
+        ]
+    }
+}

@@ -1,0 +1,20 @@
+name: Verify helmut.cloud SDK version
+
+on:
+  push
+
+jobs:
+  checkSDKversion:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v3
+
+      - name: Check helmut.cloud SDK version
+        if: github.repository == 'moovit-sp-gmbh/wave-nodes-catalog-blueprint'
+        run: |
+          invalid=$(jq '.dependencies["hcloud-sdk"] | contains("npm")' package.json)
+          if [ $invalid == "true" ]; then
+            echo "Invalid version of the helmut.cloud SDK"
+            exit 1
+          fi
+
