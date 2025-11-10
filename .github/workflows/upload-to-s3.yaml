@@ -58,7 +58,7 @@ jobs:
           cp ./changelog-converted.json upload/changelog.json
           find ${{ github.workspace }}/lib/nodes -type f -name '*.md' -exec cp {} ${{ github.workspace }}/upload/docs/ \;
 
-       name: Upload catalog and update registry
+      - name: Upload catalog and update registry
         id: upload
         uses: moovit-sp-gmbh/hcloud-catalog-upload-action@v1.1.0
         with:
@@ -79,4 +79,3 @@ jobs:
 
       - name: Print catalog registry URL
         run: echo ${{ steps.upload.outputs.url }}/index.json
-
