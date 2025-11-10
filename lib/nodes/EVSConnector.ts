@@ -21,6 +21,7 @@ enum OutputName {
   BODY = "Body",
   RUN_TIME = "Run time",
   JOB_ID = "Job Id",
+  REQUEST = "Request", // new: raw JSON we sent
 }
 
 function normalizeBase(hostUrl: string): string {
@@ -29,7 +30,7 @@ function normalizeBase(hostUrl: string): string {
 
 function prettyBody(data: any, headers: any): string {
   try {
-    const ct = String(headers?.["content-type"] || "").toLowerCase();
+    const ct = String((headers && (headers as any)["content-type"]) || "").toLowerCase();
     const isJson = typeof data === "object" || ct.includes("application/json");
     return isJson
       ? (typeof data === "string" ? JSON.stringify(JSON.parse(data), null, 2) : JSON.stringify(data, null, 2))
@@ -50,7 +51,6 @@ type JobDTO = {
   id?: string;
   name?: string;
   metadata?: Metadata[];
-  marker?: any[];
   targetName?: string;
   targetId?: string;
   xsquarePriority?: string;
@@ -69,35 +69,18 @@ function clean<T extends Record<string, any>>(obj: T): T {
   return out as T;
 }
 
-async function postWith415Fallback(url: string, payload: any) {
-  const baseCfg: AxiosRequestConfig = {
-    headers: {
-      "Content-Type": "application/json",
-      // keep Accept minimal; some servers dislike complex lists
-      Accept: "application/json",
-    },
+async function postMinimal(url: string, payload: any) {
+  // First attempt: NO custom headers; axios will set application/json automatically for plain objects.
+  let res = await axios.post(url, payload, { validateStatus: () => true, timeout: 60000 });
+  if (res.status !== 415) return res;
+
+  // Fallback: set minimal Content-Type explicitly (no Accept, no charset)
+  const cfg2: AxiosRequestConfig = {
+    headers: { "Content-Type": "application/json" },
     validateStatus: () => true,
     timeout: 60000,
   };
-
-  // Primary attempt
-  let res = await axios.post(url, payload, baseCfg);
-  if (res.status !== 415) return res;
-
-  // Fallback 1: uppercase charset
-  const cfg2: AxiosRequestConfig = {
-    ...baseCfg,
-    headers: { ...baseCfg.headers, "Content-Type": "application/json; charset=UTF-8" },
-  };
-  res = await axios.post(url, JSON.stringify(payload), cfg2);
-  if (res.status !== 415) return res;
-
-  // Fallback 2: lowercase charset
-  const cfg3: AxiosRequestConfig = {
-    ...baseCfg,
-    headers: { ...baseCfg.headers, "Content-Type": "application/json; charset=utf-8" },
-  };
-  res = await axios.post(url, JSON.stringify(payload), cfg3);
+  res = await axios.post(url, payload, cfg2);
   return res;
 }
 
@@ -110,62 +93,20 @@ export default class EVSConnector extends Node {
     kind: "NODE",
     category: "Transfer",
     color: "node-aquaGreen",
-    version: { major: 1, minor: 0, patch: 6, changelog: ["415 fallback: switch Content-Type variants and serialization"] },
+    version: { major: 1, minor: 1, patch: 0, changelog: ["Minimal headers by default, 415 fallback, added Request output"] },
     author: {
       name: "Code Copilot",
       company: "Community",
       email: "n/a",
     },
     inputs: [
-      {
-        name: InputName.HOST_URL,
-        description: "Base URL of the EVS Connector (no path).",
-        type: "STRING" as InputType,
-        example: "http://10.0.0.1:8084",
-        mandatory: true,
-      },
-      {
-        name: InputName.TARGET_NAME,
-        description: "XSquare target name.",
-        type: "STRING" as InputType,
-        example: "XSquareTarget",
-        mandatory: true,
-      },
-      {
-        name: InputName.TARGET_ID,
-        description: "XSquare target ID.",
-        type: "STRING" as InputType,
-        example: "123",
-        mandatory: true,
-      },
-      {
-        name: InputName.XSQUARE_PRIORITY,
-        description: "XSquare priority (optional). String value only.",
-        type: "STRING" as InputType,
-        example: "1",
-        mandatory: false,
-      },
-      {
-        name: InputName.METADATASET_NAME,
-        description: "Metadataset name (optional).",
-        type: "STRING" as InputType,
-        example: "DefaultSet",
-        mandatory: false,
-      },
-      {
-        name: InputName.FILEPATH,
-        description: "Full path to the video file to transfer.",
-        type: "STRING" as InputType,
-        example: "/mnt/media/input.mov",
-        mandatory: true,
-      },
-      {
-        name: InputName.METADATA,
-        description: "Metadata as JSON (array/object) or as lines: key=value;key2=value2.",
-        type: "STRING" as InputType,
-        example: "title=Clip 01;show=Sports",
-        mandatory: false,
-      },
+      { name: InputName.HOST_URL, description: "Base URL of the EVS Connector (no path).", type: "STRING" as InputType, example: "http://10.0.0.1:8084", mandatory: true },
+      { name: InputName.TARGET_NAME, description: "XSquare target name.", type: "STRING" as InputType, example: "XSquareTarget", mandatory: true },
+      { name: InputName.TARGET_ID, description: "XSquare target ID.", type: "STRING" as InputType, example: "123", mandatory: true },
+      { name: InputName.XSQUARE_PRIORITY, description: "XSquare priority (optional).", type: "STRING" as InputType, example: "1", mandatory: false },
+      { name: InputName.METADATASET_NAME, description: "Metadataset name (optional).", type: "STRING" as InputType, example: "DefaultSet", mandatory: false },
+      { name: InputName.FILEPATH, description: "Full path to the video file to transfer.", type: "STRING" as InputType, example: "/mnt/media/input.mov", mandatory: true },
+      { name: InputName.METADATA, description: "Metadata as JSON (array/object) or lines: key=value;key2=value2.", type: "STRING" as InputType, example: "title=Clip 01;show=Sports", mandatory: false },
     ],
     outputs: [
       { name: OutputName.STATUS, description: "HTTP status.", type: "NUMBER" as OutputType, example: 201 },
@@ -173,6 +114,7 @@ export default class EVSConnector extends Node {
       { name: OutputName.BODY, description: "Response body.", type: "STRING" as OutputType, example: "{ id: '...', jobId: '...' }" },
       { name: OutputName.RUN_TIME, description: "Execution time in milliseconds.", type: "NUMBER" as OutputType, example: 42 },
       { name: OutputName.JOB_ID, description: "Job ID reported by the server (if available).", type: "STRING" as OutputType, example: "a1b2c3" },
+      { name: OutputName.REQUEST, description: "Exact JSON request body that was sent.", type: "STRING" as OutputType, example: "{\"name\":\"file.mov\"}" },
     ],
   };
 
@@ -235,8 +177,12 @@ export default class EVSConnector extends Node {
       metadata: metadata.length ? metadata : undefined,
     });
 
+    // expose the exact JSON we're sending
+    const requestJson = JSON.stringify(payload);
+    this.wave.outputs.setOutput(OutputName.REQUEST, requestJson);
+
     try {
-      const res = await postWith415Fallback(url, payload);
+      const res = await postMinimal(url, payload);
 
       this.wave.outputs.setOutput(OutputName.STATUS, Number(res.status));
       this.wave.outputs.setOutput(OutputName.HEADERS, res.headers as any);
