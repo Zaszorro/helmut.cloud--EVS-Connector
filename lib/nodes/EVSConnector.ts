@@ -4,7 +4,8 @@ import axios from "axios";
 
 // --- Typen und Enums ---
 
-type InputType = "STRING" | "STRING_PASSWORD" | "NUMBER" | "BOOLEAN" | "ENUM";
+// HIER IST DIE ERSTE KORREKTUR: "ENUM" wurde zu "STRING_SELECT"
+type InputType = "STRING" | "STRING_PASSWORD" | "NUMBER" | "BOOLEAN" | "STRING_SELECT";
 type OutputType = "NUMBER" | "STRING" | "STRING_MAP" | "JSON";
 
 enum InputName {
@@ -76,9 +77,9 @@ export default class EVSConnector extends Node {
     color: "node-blue", // Farbe (kann angepasst werden)
     version: { major: 1, minor: 0, patch: 0, changelog: ["Initial release"] },
     author: {
-      name: "David Merzenich", // Bitte anpassen
+      name: "Your Name", // Bitte anpassen
       company: "MoovIT SP",
-      email: "d.merzenich@moovit-sp.com", // Bitte anpassen
+      email: "your.email@moovit-sp.com", // Bitte anpassen
     },
     inputs: [
       { name: InputName.HOST_URL, description: "EVS Connector Host URL (e.g., http://10.204.41.100:8084)", type: "STRING" as InputType, example: "http://10.204.41.100:8084", mandatory: true },
@@ -87,7 +88,8 @@ export default class EVSConnector extends Node {
       {
         name: InputName.XSQ_PRIORITY,
         description: "Optional priority value for XSquare.",
-        type: "ENUM" as InputType,
+        // HIER IST DIE ZWEITE KORREKTUR: "ENUM" wurde zu "STRING_SELECT"
+        type: "STRING_SELECT" as InputType,
         example: "Medium",
         mandatory: true,
         defaultValue: "Medium",
