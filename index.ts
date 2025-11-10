@@ -1,10 +1,10 @@
 import Catalog from "./lib/Catalog";
-import HttpClient from "./lib/nodes/HttpClient";
+import EVSConnector from "./lib/nodes/EVSConnector";
 
 export default new Catalog(
-    "example name",
-    "example description",
+    "examhelmut.cloud EVS Connector",
+    "Node catalogto cennect to EVS",
     "https://app.helmut.cloud/img/logo_white.webp",
-    "1.5.0-dev-6",
-    HttpClient
+    "1.6.0",
+    EVSConnector
 );
