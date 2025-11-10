@@ -58,24 +58,25 @@ jobs:
           cp ./changelog-converted.json upload/changelog.json
           find ${{ github.workspace }}/lib/nodes -type f -name '*.md' -exec cp {} ${{ github.workspace }}/upload/docs/ \;
 
-      - name: Upload catalog and update registry
+       name: Upload catalog and update registry
         id: upload
         uses: moovit-sp-gmbh/hcloud-catalog-upload-action@v1.1.0
         with:
-          endpoint: <S3 endpoint>
-          bucket: <name of your S3 bucket>
-          public_endpoint: <S3 public read endpoint for the specified bucket>
-          region: <region of your S3 bucket>
-          access_key_id: ${{ secrets.<secret set in the GH repo> }}
-          secret_access_key: ${{ secrets.<secret set in the GH repo> }}
+          endpoint: https://s3.eu-central-1.amazonaws.com/
+          bucket: moov-dm
+          public_endpoint: https://moov-dm.s3.eu-central-1.amazonaws.com/
+          region: eu-central-1
+          access_key_id: ${{ secrets.access_key_id }}
+          secret_access_key: ${{ secrets.secret_access_key }}
           name: ${{ steps.catalog-info.outputs.name }}
           description: ${{ steps.catalog-info.outputs.description }}
           logo: ${{ steps.catalog-info.outputs.logoUrl }}
           minimum_engine_version: ${{ steps.catalog-info.outputs.minimumEngineVersion }}
           version: ${{ steps.catalog-version.outputs.version }}
           source_dir: ${{ github.workspace }}/upload
-          dest_dir: "<your path>"
+          dest_dir: "NodeKitCatalogs/Cosmo"
           on_fail: delete
 
       - name: Print catalog registry URL
         run: echo ${{ steps.upload.outputs.url }}/index.json
+

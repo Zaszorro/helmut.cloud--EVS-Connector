@@ -1,40 +1,54 @@
 // lib/nodes/EVSConnector.ts
-// NodeKit node for helmut.cloud High5 to create an EVS transfer job via EVS Connector API.
-// Spec v2; built against the wave-nodes-catalog-blueprint + Swagger `evsconnectorswagger.json`.
-//
-// Minimal docs only where it matters ("why").
-
 import Node from "../Node";
-import axios, { AxiosError } from "axios";
+import axios from "axios";
 
-// Keep types aligned with blueprint's other nodes
 type InputType = "STRING" | "STRING_PASSWORD" | "NUMBER" | "BOOLEAN";
 type OutputType = "NUMBER" | "STRING" | "STRING_MAP" | "STRING_ARRAY";
 
-// Inputs requested by user (exact labels)
 enum InputName {
   HOST_URL = "HOST URL",
   TARGET_NAME = "Target Name",
   TARGET_ID = "TargetID",
   XSQUARE_PRIORITY = "XSquare priority",
-  METADATASET_NAME = "Meadats set name", // as provided; do not change to avoid breaking saved streams
+  METADATASET_NAME = "Meadats set name", // keep exact label as provided to avoid breaking saved streams
   FILEPATH = "filepath",
-  METADATA = "Metadaten",
+  METADATA = "Metadaten", // keep exact label as provided to match existing streams; description below is English
 }
 
-// Outputs we expose
 enum OutputName {
-  JOB_ID = "jobId",
-  HTTP_STATUS = "httpStatus",
-  RESPONSE_JSON = "responseJson",
+  STATUS = "Status code",
+  HEADERS = "Headers",
+  BODY = "Body",
+  RUN_TIME = "Run time",
+  JOB_ID = "Job Id",
 }
 
-// Swagger types (partial) to keep payload shape clear
+function normalizeBase(hostUrl: string): string {
+  return (hostUrl || "").trim().replace(/\/+$/g, "");
+}
+
+function prettyBody(data: any, headers: any): string {
+  try {
+    const ct = String(headers?.["content-type"] || "").toLowerCase();
+    const isJson = typeof data === "object" || ct.includes("application/json");
+    return isJson
+      ? (typeof data === "string" ? JSON.stringify(JSON.parse(data), null, 2) : JSON.stringify(data, null, 2))
+      : (typeof data === "string" ? data : String(data));
+  } catch {
+    return typeof data === "string" ? data : String(data);
+  }
+}
+
+type Metadata = {
+  id?: string;
+  value?: string;
+  values?: string[];
+};
+
 type JobDTO = {
   id?: string;
   name?: string;
   metadata?: Metadata[];
-  marker?: Marker[];
   targetName?: string;
   targetId?: string;
   xsquarePriority?: string;
@@ -42,255 +56,157 @@ type JobDTO = {
   fileToTransfer?: string;
 };
 
-type Marker = {
-  name?: string;
-  comments?: string;
-  startPoint?: string;
-  endPoint?: string;
-  color?:
-    | "GREEN"
-    | "RED"
-    | "PURPLE"
-    | "ORANGE"
-    | "YELLOW"
-    | "WHITE"
-    | "BLUE"
-    | "TURQUOISE";
-};
-
-type Metadata = {
-  id?: string;
-  parent?: MetadataSetDTO[];
-  name?: string;
-  type?:
-    | "STRING"
-    | "INTEGER"
-    | "BOOLEAN"
-    | "DATE"
-    | "DATETIME"
-    | "TAG"
-    | "TAG_ARRAY"
-    | "TIME"
-    | "AUTOCOMPLETE"
-    | "SELECT"
-    | "MULTISELECT"
-    | "TYPEAHEAD"
-    | "CHOOSE_FOLDER";
-  values?: string[];
-  value?: string;
-  readonly?: boolean;
-  mandatory?: boolean;
-  disabled?: boolean;
-  hide?: boolean;
-  regex?: string;
-  tags?: string[];
-};
-
-type MetadataSetDTO = {
-  id?: string;
-  name?: string;
-  tags?: string[];
-};
-
-// Node spec v2
 export default class EVSConnector extends Node {
   specification = {
     specVersion: 2,
     name: "EVS Connector",
-    description:
-      "Überträgt ein Videofile via EVS Connector API und erstellt einen Transfer-Job (POST /evsconn/v1/job). Unterstützt optionale Metadaten.",
+    originalName: "EVS Connector",
+    description: "Transfers a video file via EVS Connector API and creates a transfer job (POST /evsconn/v1/job).",
+    kind: "NODE",
     category: "Transfer",
-    // Displayed inputs
+    color: "node-aquaGreen",
+    version: { major: 1, minor: 0, patch: 1, changelog: ["English descriptions & messages"] },
+    author: {
+      name: "Code Copilot",
+      company: "Community",
+      email: "n/a",
+    },
     inputs: [
       {
         name: InputName.HOST_URL,
+        description: "Base URL of the EVS Connector (no path).",
         type: "STRING" as InputType,
-        required: true,
-        helperText: "Basis-URL, z. B. http://host:8084",
-        placeholder: "http://10.0.0.1:8084",
+        example: "http://10.0.0.1:8084",
+        mandatory: true,
       },
       {
         name: InputName.TARGET_NAME,
+        description: "XSquare target name.",
         type: "STRING" as InputType,
-        required: true,
-        placeholder: "XSquare-Targetname",
+        example: "XSquareTarget",
+        mandatory: true,
       },
       {
         name: InputName.TARGET_ID,
+        description: "XSquare target ID.",
         type: "STRING" as InputType,
-        required: true,
-        placeholder: "Target-ID",
+        example: "123",
+        mandatory: true,
       },
       {
         name: InputName.XSQUARE_PRIORITY,
+        description: "XSquare priority (optional).",
         type: "STRING" as InputType,
-        required: false,
-        placeholder: "z. B. 1, 5, HIGH",
+        example: "HIGH",
+        mandatory: false,
       },
       {
         name: InputName.METADATASET_NAME,
+        description: "Metadataset name (optional).",
         type: "STRING" as InputType,
-        required: false,
-        placeholder: "XSquare Metadataset-Name",
+        example: "DefaultSet",
+        mandatory: false,
       },
       {
         name: InputName.FILEPATH,
+        description: "Full path to the video file to transfer.",
         type: "STRING" as InputType,
-        required: true,
-        helperText: "Voller Pfad zum zu transferierenden Video.",
-        placeholder: "/mnt/media/input.mov",
+        example: "/mnt/media/input.mov",
+        mandatory: true,
       },
       {
         name: InputName.METADATA,
+        description: "Metadata as JSON (array/object) or as lines in the format key=value;key2=value2.",
         type: "STRING" as InputType,
-        required: false,
-        helperText:
-          "Entweder JSON (Array/Objekt) oder Zeilen im Format key=value. Beispiel: title=Clip 01\\nshow=Sports",
-        placeholder:
-          '[{"id":"title","value":"Clip 01"},{"id":"show","value":"Sports"}]',
-        textarea: true,
+        example: "title=Clip 01;show=Sports",
+        mandatory: false,
       },
     ],
     outputs: [
-      {
-        name: OutputName.JOB_ID,
-        type: "STRING" as OutputType,
-        helperText: "Vom Connector vergebene Job-ID (falls vorhanden).",
-      },
-      {
-        name: OutputName.HTTP_STATUS,
-        type: "STRING" as OutputType,
-      },
-      {
-        name: OutputName.RESPONSE_JSON,
-        type: "STRING" as OutputType,
-        helperText: "Serverantwort als JSON-String.",
-      },
+      { name: OutputName.STATUS, description: "HTTP status.", type: "NUMBER" as OutputType, example: 201 },
+      { name: OutputName.HEADERS, description: "Response headers.", type: "STRING_MAP" as OutputType, example: { "content-type": "application/json" } },
+      { name: OutputName.BODY, description: "Response body.", type: "STRING" as OutputType, example: "{ id: '...', jobId: '...' }" },
+      { name: OutputName.RUN_TIME, description: "Execution time in milliseconds.", type: "NUMBER" as OutputType, example: 42 },
+      { name: OutputName.JOB_ID, description: "Job ID reported by the server (if available).", type: "STRING" as OutputType, example: "a1b2c3" },
     ],
   };
 
-  // ---- Helpers ----
-
-  /** Parse metadata String to Swagger-compatible Metadata[].
-   *  Why: EVS expects an array; users may provide JSON or simple key=value lines.
-   */
   private parseMetadata(raw: string | undefined | null): Metadata[] {
     if (!raw) return [];
     const txt = String(raw).trim();
     if (!txt) return [];
-
-    // Try JSON first
     try {
       const parsed = JSON.parse(txt);
-      if (Array.isArray(parsed)) {
-        return parsed as Metadata[];
-      }
+      if (Array.isArray(parsed)) return parsed as Metadata[];
       if (parsed && typeof parsed === "object") {
-        // Convert object map -> array
-        return Object.entries(parsed as Record<string, string>).map(
-          ([k, v]) => ({ id: k, value: String(v) })
-        );
+        return Object.entries(parsed as Record<string, string>).map(([k, v]) => ({ id: k, value: String(v) }));
       }
-    } catch {
-      // fall through to line parsing
-    }
-
-    // Fallback: parse line-based `key=value`
+    } catch {}
     const out: Metadata[] = [];
-    const lines = txt.split(/[\r\n;]+/).map((l) => l.trim()).filter(Boolean);
-    for (const line of lines) {
-      const m = line.match(/^\s*([^=:#]+)\s*[:=]\s*(.*)\s*$/);
-      if (m) {
-        const key = m[1].trim();
-        const value = m[2].trim();
-        out.push({ id: key, value });
-      }
+    const parts = txt.split(/[\r\n;]+/).map((p) => p.trim()).filter(Boolean);
+    for (const p of parts) {
+      const m = p.match(/^\s*([^=:#]+)\s*[:=]\s*(.*)\s*$/);
+      if (m) out.push({ id: m[1].trim(), value: m[2].trim() });
     }
     return out;
   }
 
-  /** Try to extract a job id from arbitrary server response */
-  private extractJobId(data: unknown): string {
+  private extractJobId(data: any): string {
     try {
-      const obj = typeof data === "string" ? JSON.parse(data) : (data as any);
-      return String(
-        obj?.jobId ?? obj?.id ?? obj?.data?.id ?? obj?.data?.jobId ?? ""
-      );
+      const obj = typeof data === "string" ? JSON.parse(data) : data;
+      return String(obj?.jobId ?? obj?.id ?? obj?.data?.id ?? obj?.data?.jobId ?? "");
     } catch {
       return "";
     }
   }
 
-  // ---- Execution ----
   async execute(): Promise<void> {
-    const baseUrl = String(this.wave.inputs.getInput(InputName.HOST_URL) ?? "").trim();
-    const targetName = String(this.wave.inputs.getInput(InputName.TARGET_NAME) ?? "").trim();
-    const targetId = String(this.wave.inputs.getInput(InputName.TARGET_ID) ?? "").trim();
-    const priority = String(this.wave.inputs.getInput(InputName.XSQUARE_PRIORITY) ?? "").trim();
-    const metadatasetName = String(this.wave.inputs.getInput(InputName.METADATASET_NAME) ?? "").trim();
-    const fileToTransfer = String(this.wave.inputs.getInput(InputName.FILEPATH) ?? "").trim();
-    const metadataRaw = String(this.wave.inputs.getInput(InputName.METADATA) ?? "");
+    const started = Date.now();
 
-    if (!baseUrl) throw new Error("HOST URL ist erforderlich.");
-    if (!fileToTransfer) throw new Error("filepath ist erforderlich.");
-    if (!targetName) throw new Error("Target Name ist erforderlich.");
-    if (!targetId) throw new Error("TargetID ist erforderlich.");
+    const baseUrl = normalizeBase(String(this.wave.inputs.getInputValueByInputName(InputName.HOST_URL) ?? ""));
+    const targetName = String(this.wave.inputs.getInputValueByInputName(InputName.TARGET_NAME) ?? "").trim();
+    const targetId = String(this.wave.inputs.getInputValueByInputName(InputName.TARGET_ID) ?? "").trim();
+    const xsquarePriority = String(this.wave.inputs.getInputValueByInputName(InputName.XSQUARE_PRIORITY) ?? "").trim();
+    const metadatasetName = String(this.wave.inputs.getInputValueByInputName(InputName.METADATASET_NAME) ?? "").trim();
+    const fileToTransfer = String(this.wave.inputs.getInputValueByInputName(InputName.FILEPATH) ?? "").trim();
+    const metadataRaw = String(this.wave.inputs.getInputValueByInputName(InputName.METADATA) ?? "");
 
-    const url = `${baseUrl.replace(/\/+$/, "")}/evsconn/v1/job`;
+    if (!baseUrl) throw new Error("HOST URL is required");
+    if (!targetName) throw new Error("Target Name is required");
+    if (!targetId) throw new Error("TargetID is required");
+    if (!fileToTransfer) throw new Error("filepath is required");
 
-    // Der Name: sinnvoller Default = Dateiname
-    const nameFromPath = fileToTransfer.split(/[\\/]/).pop() || fileToTransfer;
+    const url = `${baseUrl}/evsconn/v1/job`;
+    const name = fileToTransfer.split(/[\\/]/).pop() || fileToTransfer;
 
     const payload: JobDTO = {
-      name: nameFromPath,
+      name,
       targetName,
       targetId,
-      xsquarePriority: priority || undefined,
+      xsquarePriority: xsquarePriority || undefined,
       metadatasetName: metadatasetName || undefined,
       fileToTransfer,
       metadata: this.parseMetadata(metadataRaw),
     };
 
-    this.wave.logger.info(`POST ${url}`);
-    this.wave.logger.debug(`Payload: ${JSON.stringify(payload)}`);
+    const res = await axios.post(url, payload, {
+      headers: { "Content-Type": "application/json" },
+      validateStatus: () => true,
+      timeout: 60000,
+    });
+
+    this.wave.outputs.setOutput(OutputName.STATUS, Number(res.status));
+    this.wave.outputs.setOutput(OutputName.HEADERS, res.headers as any);
+    this.wave.outputs.setOutput(OutputName.BODY, prettyBody(res.data, res.headers));
+    this.wave.outputs.setOutput(OutputName.RUN_TIME, Date.now() - started);
 
     try {
-      const res = await axios.post(url, payload, {
-        headers: { "Content-Type": "application/json" },
-        // timeout could be made configurable if needed
-        timeout: 60_000,
-        validateStatus: () => true, // we handle errors uniformly
-      });
-
-      // Set outputs
       const jobId = this.extractJobId(res.data);
       this.wave.outputs.setOutput(OutputName.JOB_ID, jobId);
-      this.wave.outputs.setOutput(OutputName.HTTP_STATUS, String(res.status));
-      try {
-        const json =
-          typeof res.data === "string" ? res.data : JSON.stringify(res.data);
-        this.wave.outputs.setOutput(OutputName.RESPONSE_JSON, json);
-      } catch {
-        this.wave.outputs.setOutput(OutputName.RESPONSE_JSON, "");
-      }
+    } catch {}
 
-      if (res.status >= 400) {
-        // Why: Make failures visible in wave logs & fail node for proper branching
-        throw new Error(
-          `HTTP ${res.status} while POST ${url} — ${typeof res.data === "string" ? res.data : JSON.stringify(res.data)}`
-        );
-      }
-    } catch (err) {
-      const ax = err as AxiosError;
-      const status = ax.response?.status;
-      if (status) this.wave.outputs.setOutput(OutputName.HTTP_STATUS, String(status));
-      this.wave.logger.error(
-        `EVS Connector Fehler: ${ax.message}; ` +
-          (ax.response?.data
-            ? `Body: ${typeof ax.response.data === "string" ? ax.response.data : JSON.stringify(ax.response.data)}`
-            : "")
-      );
-      throw err;
+    if (res.status >= 400) {
+      throw new Error(`HTTP ${res.status} POST ${url}`);
     }
   }
 }
