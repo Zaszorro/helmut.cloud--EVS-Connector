@@ -1,6 +1,6 @@
 // lib/nodes/EVSConnector.ts
 import Node from "../Node";
-import axios, { AxiosError, AxiosRequestConfig } from "axios";
+import axios, { AxiosError, AxiosRequestConfig, AxiosResponse } from "axios";
 
 type InputType = "STRING" | "STRING_PASSWORD" | "NUMBER" | "BOOLEAN";
 type OutputType = "NUMBER" | "STRING" | "STRING_MAP" | "STRING_ARRAY";
@@ -21,7 +21,7 @@ enum OutputName {
   BODY = "Body",
   RUN_TIME = "Run time",
   JOB_ID = "Job Id",
-  REQUEST = "Request", // new: raw JSON we sent
+  REQUEST = "Request",
 }
 
 function normalizeBase(hostUrl: string): string {
@@ -51,6 +51,7 @@ type JobDTO = {
   id?: string;
   name?: string;
   metadata?: Metadata[];
+  // marker?: Marker[]; // omitted unless needed
   targetName?: string;
   targetId?: string;
   xsquarePriority?: string;
@@ -69,19 +70,51 @@ function clean<T extends Record<string, any>>(obj: T): T {
   return out as T;
 }
 
-async function postMinimal(url: string, payload: any) {
-  // First attempt: NO custom headers; axios will set application/json automatically for plain objects.
-  let res = await axios.post(url, payload, { validateStatus: () => true, timeout: 60000 });
-  if (res.status !== 415) return res;
+function parseMetadata(raw: string | undefined | null): Metadata[] {
+  if (!raw) return [];
+  const txt = String(raw).trim();
+  if (!txt) return [];
+  try {
+    const parsed = JSON.parse(txt);
+    if (Array.isArray(parsed)) return parsed as Metadata[];
+    if (parsed && typeof parsed === "object") {
+      return Object.entries(parsed as Record<string, string>).map(([k, v]) => ({ id: k, name: k, value: String(v) }));
+    }
+  } catch {}
+  const out: Metadata[] = [];
+  const parts = txt.split(/[\r\n;]+/).map((p) => p.trim()).filter(Boolean);
+  for (const p of parts) {
+    const m = p.match(/^\s*([^=:#]+)\s*[:=]\s*(.*)\s*$/);
+    if (m) out.push({ id: m[1].trim(), name: m[1].trim(), value: m[2].trim() });
+  }
+  return out;
+}
 
-  // Fallback: set minimal Content-Type explicitly (no Accept, no charset)
-  const cfg2: AxiosRequestConfig = {
-    headers: { "Content-Type": "application/json" },
-    validateStatus: () => true,
-    timeout: 60000,
-  };
-  res = await axios.post(url, payload, cfg2);
-  return res;
+function extractJobId(data: any): string {
+  try {
+    const obj = typeof data === "string" ? JSON.parse(data) : data;
+    return String(obj?.jobId ?? obj?.id ?? obj?.data?.id ?? obj?.data?.jobId ?? "");
+  } catch {
+    return "";
+  }
+}
+
+async function postProgressive(url: string, json: string): Promise<AxiosResponse> {
+  // Try with no headers first (mimic bare-bones clients)
+  const profiles: Array<AxiosRequestConfig> = [
+    { validateStatus: () => true, timeout: 60000, transformRequest: [(d) => d] },
+    { headers: { "Content-Type": "application/json" }, validateStatus: () => true, timeout: 60000, transformRequest: [(d) => d] },
+    { headers: { "Content-Type": "application/json; charset=UTF-8" }, validateStatus: () => true, timeout: 60000, transformRequest: [(d) => d] },
+    { headers: { "Content-Type": "application/json; charset=utf-8" }, validateStatus: () => true, timeout: 60000, transformRequest: [(d) => d] },
+  ];
+
+  let last: AxiosResponse | null = null;
+  for (const cfg of profiles) {
+    const res = await axios.post(url, json, cfg);
+    last = res;
+    if (res.status !== 415) return res; // only escalate if Unsupported Media Type persists
+  }
+  return last!;
 }
 
 export default class EVSConnector extends Node {
@@ -93,12 +126,8 @@ export default class EVSConnector extends Node {
     kind: "NODE",
     category: "Transfer",
     color: "node-aquaGreen",
-    version: { major: 1, minor: 1, patch: 0, changelog: ["Minimal headers by default, 415 fallback, added Request output"] },
-    author: {
-      name: "Code Copilot",
-      company: "Community",
-      email: "n/a",
-    },
+    version: { major: 1, minor: 3, patch: 0, changelog: ["Adapted to Java action semantics; progressive headers; Request output"] },
+    author: { name: "Code Copilot", company: "Community", email: "n/a" },
     inputs: [
       { name: InputName.HOST_URL, description: "Base URL of the EVS Connector (no path).", type: "STRING" as InputType, example: "http://10.0.0.1:8084", mandatory: true },
       { name: InputName.TARGET_NAME, description: "XSquare target name.", type: "STRING" as InputType, example: "XSquareTarget", mandatory: true },
@@ -117,35 +146,6 @@ export default class EVSConnector extends Node {
       { name: OutputName.REQUEST, description: "Exact JSON request body that was sent.", type: "STRING" as OutputType, example: "{\"name\":\"file.mov\"}" },
     ],
   };
-
-  private parseMetadata(raw: string | undefined | null): Metadata[] {
-    if (!raw) return [];
-    const txt = String(raw).trim();
-    if (!txt) return [];
-    try {
-      const parsed = JSON.parse(txt);
-      if (Array.isArray(parsed)) return parsed as Metadata[];
-      if (parsed && typeof parsed === "object") {
-        return Object.entries(parsed as Record<string, string>).map(([k, v]) => ({ id: k, name: k, value: String(v) }));
-      }
-    } catch {}
-    const out: Metadata[] = [];
-    const parts = txt.split(/[\r\n;]+/).map((p) => p.trim()).filter(Boolean);
-    for (const p of parts) {
-      const m = p.match(/^\s*([^=:#]+)\s*[:=]\s*(.*)\s*$/);
-      if (m) out.push({ id: m[1].trim(), name: m[1].trim(), value: m[2].trim() });
-    }
-    return out;
-  }
-
-  private extractJobId(data: any): string {
-    try {
-      const obj = typeof data === "string" ? JSON.parse(data) : data;
-      return String(obj?.jobId ?? obj?.id ?? obj?.data?.id ?? obj?.data?.jobId ?? "");
-    } catch {
-      return "";
-    }
-  }
 
   async execute(): Promise<void> {
     const started = Date.now();
@@ -166,7 +166,7 @@ export default class EVSConnector extends Node {
     const url = `${baseUrl}/evsconn/v1/job`;
     const name = fileToTransfer.split(/[\\/]/).pop() || fileToTransfer;
 
-    const metadata = this.parseMetadata(metadataRaw);
+    const metadata = parseMetadata(metadataRaw);
     const payload: JobDTO = clean({
       name,
       targetName,
@@ -177,12 +177,11 @@ export default class EVSConnector extends Node {
       metadata: metadata.length ? metadata : undefined,
     });
 
-    // expose the exact JSON we're sending
-    const requestJson = JSON.stringify(payload);
-    this.wave.outputs.setOutput(OutputName.REQUEST, requestJson);
+    const json = JSON.stringify(payload);
+    this.wave.outputs.setOutput(OutputName.REQUEST, json);
 
     try {
-      const res = await postMinimal(url, payload);
+      const res = await postProgressive(url, json);
 
       this.wave.outputs.setOutput(OutputName.STATUS, Number(res.status));
       this.wave.outputs.setOutput(OutputName.HEADERS, res.headers as any);
@@ -190,7 +189,7 @@ export default class EVSConnector extends Node {
       this.wave.outputs.setOutput(OutputName.RUN_TIME, Date.now() - started);
 
       try {
-        const jobId = this.extractJobId(res.data);
+        const jobId = extractJobId(res.data);
         this.wave.outputs.setOutput(OutputName.JOB_ID, jobId);
       } catch {}
 
