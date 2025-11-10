@@ -50,16 +50,12 @@ type JobDTO = {
   id?: string;
   name?: string;
   metadata?: Metadata[];
-  targetName?: string;
-  targetId?: string | number;
-  xsquarePriority?: string | number;
+  targetName?: string;          // string per Swagger
+  targetId?: string;            // string per Swagger
+  xsquarePriority?: string;     // string per Swagger
   metadatasetName?: string;
   fileToTransfer?: string;
 };
-
-function isDigitsOnly(v: string): boolean {
-  return !!v && /^[0-9]+$/.test(v);
-}
 
 function clean<T extends Record<string, any>>(obj: T): T {
   const out: Record<string, any> = {};
@@ -80,7 +76,7 @@ export default class EVSConnector extends Node {
     kind: "NODE",
     category: "Transfer",
     color: "node-aquaGreen",
-    version: { major: 1, minor: 0, patch: 3, changelog: ["Removed wave.logger usage to match CosmoCreateAsset style"] },
+    version: { major: 1, minor: 0, patch: 4, changelog: ["Strict Swagger types (strings only), removed numeric coercion"] },
     author: {
       name: "Code Copilot",
       company: "Community",
@@ -110,7 +106,7 @@ export default class EVSConnector extends Node {
       },
       {
         name: InputName.XSQUARE_PRIORITY,
-        description: "XSquare priority (optional). Accepts numeric or string values.",
+        description: "XSquare priority (optional). String value only.",
         type: "STRING" as InputType,
         example: "1",
         mandatory: false,
@@ -180,20 +176,16 @@ export default class EVSConnector extends Node {
 
     const baseUrl = normalizeBase(String(this.wave.inputs.getInputValueByInputName(InputName.HOST_URL) ?? ""));
     const targetName = String(this.wave.inputs.getInputValueByInputName(InputName.TARGET_NAME) ?? "").trim();
-    const targetIdStr = String(this.wave.inputs.getInputValueByInputName(InputName.TARGET_ID) ?? "").trim();
-    const priorityStr = String(this.wave.inputs.getInputValueByInputName(InputName.XSQUARE_PRIORITY) ?? "").trim();
+    const targetId = String(this.wave.inputs.getInputValueByInputName(InputName.TARGET_ID) ?? "").trim();
+    const xsquarePriority = String(this.wave.inputs.getInputValueByInputName(InputName.XSQUARE_PRIORITY) ?? "").trim();
     const metadatasetName = String(this.wave.inputs.getInputValueByInputName(InputName.METADATASET_NAME) ?? "").trim();
     const fileToTransfer = String(this.wave.inputs.getInputValueByInputName(InputName.FILEPATH) ?? "").trim();
     const metadataRaw = String(this.wave.inputs.getInputValueByInputName(InputName.METADATA) ?? "");
 
     if (!baseUrl) throw new Error("HOST URL is required");
     if (!targetName) throw new Error("Target Name is required");
-    if (!targetIdStr) throw new Error("TargetID is required");
+    if (!targetId) throw new Error("TargetID is required");
     if (!fileToTransfer) throw new Error("filepath is required");
-
-    const targetId: string | number = isDigitsOnly(targetIdStr) ? Number(targetIdStr) : targetIdStr;
-    const xsquarePriority: string | number | undefined =
-      priorityStr ? (isDigitsOnly(priorityStr) ? Number(priorityStr) : priorityStr) : undefined;
 
     const url = `${baseUrl}/evsconn/v1/job`;
     const name = fileToTransfer.split(/[\\/]/).pop() || fileToTransfer;
@@ -226,7 +218,6 @@ export default class EVSConnector extends Node {
       } catch {}
 
       if (res.status >= 400) {
-        // throw to signal failure to the workflow engine; details are already in outputs
         throw new Error(`HTTP ${res.status} POST ${url}`);
       }
     } catch (e) {
