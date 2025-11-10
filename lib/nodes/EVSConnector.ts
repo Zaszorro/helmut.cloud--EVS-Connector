@@ -1,6 +1,6 @@
 // lib/nodes/EVSConnector.ts
 import Node from "../Node";
-import axios, { AxiosError } from "axios";
+import axios, { AxiosError, AxiosRequestConfig } from "axios";
 
 type InputType = "STRING" | "STRING_PASSWORD" | "NUMBER" | "BOOLEAN";
 type OutputType = "NUMBER" | "STRING" | "STRING_MAP" | "STRING_ARRAY";
@@ -69,6 +69,38 @@ function clean<T extends Record<string, any>>(obj: T): T {
   return out as T;
 }
 
+async function postWith415Fallback(url: string, payload: any) {
+  const baseCfg: AxiosRequestConfig = {
+    headers: {
+      "Content-Type": "application/json",
+      // keep Accept minimal; some servers dislike complex lists
+      Accept: "application/json",
+    },
+    validateStatus: () => true,
+    timeout: 60000,
+  };
+
+  // Primary attempt
+  let res = await axios.post(url, payload, baseCfg);
+  if (res.status !== 415) return res;
+
+  // Fallback 1: uppercase charset
+  const cfg2: AxiosRequestConfig = {
+    ...baseCfg,
+    headers: { ...baseCfg.headers, "Content-Type": "application/json; charset=UTF-8" },
+  };
+  res = await axios.post(url, JSON.stringify(payload), cfg2);
+  if (res.status !== 415) return res;
+
+  // Fallback 2: lowercase charset
+  const cfg3: AxiosRequestConfig = {
+    ...baseCfg,
+    headers: { ...baseCfg.headers, "Content-Type": "application/json; charset=utf-8" },
+  };
+  res = await axios.post(url, JSON.stringify(payload), cfg3);
+  return res;
+}
+
 export default class EVSConnector extends Node {
   specification = {
     specVersion: 2,
@@ -78,7 +110,7 @@ export default class EVSConnector extends Node {
     kind: "NODE",
     category: "Transfer",
     color: "node-aquaGreen",
-    version: { major: 1, minor: 0, patch: 5, changelog: ["Send strict JSON JobDTO, omit empty fields/arrays, set charset in Content-Type"] },
+    version: { major: 1, minor: 0, patch: 6, changelog: ["415 fallback: switch Content-Type variants and serialization"] },
     author: {
       name: "Code Copilot",
       company: "Community",
@@ -204,13 +236,7 @@ export default class EVSConnector extends Node {
     });
 
     try {
-      const res = await axios.post(url, payload, {
-        // Explicit charset avoids 415 on strict servers
-        headers: { "Content-Type": "application/json; charset=utf-8", Accept: "application/json" },
-        validateStatus: () => true,
-        timeout: 60000,
-        transformRequest: [(data) => JSON.stringify(data)],
-      });
+      const res = await postWith415Fallback(url, payload);
 
       this.wave.outputs.setOutput(OutputName.STATUS, Number(res.status));
       this.wave.outputs.setOutput(OutputName.HEADERS, res.headers as any);
