@@ -1,22 +1,18 @@
 // lib/nodes/EVSConnector.ts
 import Node from "../Node";
-import axios from "axios";
+import axios, { AxiosError, AxiosRequestConfig } from "axios";
 
-// --- Typen und Enums ---
-
-// HIER IST DIE ERSTE KORREKTUR: "ENUM" wurde zu "STRING_SELECT"
-type InputType = "STRING" | "STRING_PASSWORD" | "NUMBER" | "BOOLEAN" | "STRING_SELECT";
-type OutputType = "NUMBER" | "STRING" | "STRING_MAP" | "JSON";
+type InputType = "STRING" | "STRING_PASSWORD" | "NUMBER" | "BOOLEAN";
+type OutputType = "NUMBER" | "STRING" | "STRING_MAP" | "STRING_ARRAY";
 
 enum InputName {
-  HOST_URL = "Host URL",
+  HOST_URL = "HOST URL",
   TARGET_NAME = "Target Name",
-  TARGET_ID = "Target ID",
-  XSQ_PRIORITY = "XSquare Priority",
-  METADATA_SET_NAME = "Metadata Set Name",
-  FILEPATH = "Filepath",
-  METADATA = "Metadata (JSON String)",
-  MARKERS = "Markers (JSON String)",
+  TARGET_ID = "TargetID",
+  XSQUARE_PRIORITY = "XSquare priority",
+  METADATASET_NAME = "Meadats set name", // keep exact label
+  FILEPATH = "filepath",
+  METADATA = "Metadaten", // keep exact label
 }
 
 enum OutputName {
@@ -24,37 +20,17 @@ enum OutputName {
   HEADERS = "Headers",
   BODY = "Body",
   RUN_TIME = "Run time",
-  JOB_ID = "EVS Job ID",
+  JOB_ID = "Job Id",
+  REQUEST = "Request",
 }
 
-// --- Hilfsfunktionen ---
-
-/**
- * Stellt eine Wartezeit (Sleep) in Millisekunden bereit.
- */
-const sleep = (ms: number) => new Promise(resolve => setTimeout(resolve, ms));
-
-/**
- * Normalisiert die Host-URL, um sicherzustellen, dass sie das Schema und den korrekten Pfad enthält.
- * (Basierend auf der Logik in EVSConnectorAction.java)
- */
 function normalizeBase(hostUrl: string): string {
-  let url = (hostUrl || "").trim().replace(/\/+$/g, ""); // Trimmen und / am Ende entfernen
-  if (!url.startsWith("http://") && !url.startsWith("https://")) {
-    url = "http://" + url;
-  }
-  if (url.endsWith("/evsconn/v1")) {
-    return url;
-  }
-  return url + "/evsconn/v1";
+  return (hostUrl || "").trim().replace(/\/+$/g, "");
 }
 
-/**
- * Formatiert den Response-Body für die Ausgabe.
- */
 function prettyBody(data: any, headers: any): string {
   try {
-    const ct = String(headers?.["content-type"] || "").toLowerCase();
+    const ct = String((headers && (headers as any)["content-type"]) || "").toLowerCase();
     const isJson = typeof data === "object" || ct.includes("application/json");
     return isJson
       ? (typeof data === "string" ? JSON.stringify(JSON.parse(data), null, 2) : JSON.stringify(data, null, 2))
@@ -64,185 +40,177 @@ function prettyBody(data: any, headers: any): string {
   }
 }
 
-// --- Haupt-Node-Klasse ---
+type Metadata = {
+  id?: string;
+  name?: string;
+  value?: string;
+  values?: string[];
+};
+
+type JobDTO = {
+  id?: string;
+  name?: string;
+  metadata?: Metadata[];
+  marker?: any[];
+  targetName?: string;
+  targetId?: string;
+  xsquarePriority?: string;
+  metadatasetName?: string;
+  fileToTransfer?: string;
+};
+
+function clean<T extends Record<string, any>>(obj: T): T {
+  const out: Record<string, any> = {};
+  for (const [k, v] of Object.entries(obj)) {
+    if (v === undefined || v === null) continue;
+    if (typeof v === "string" && v.trim() === "") continue;
+    if (Array.isArray(v) && v.length === 0) continue;
+    out[k] = v;
+  }
+  return out as T;
+}
+
+function parseMetadata(raw: string | undefined | null): Metadata[] {
+  if (!raw) return [];
+  const txt = String(raw).trim();
+  if (!txt) return [];
+  try {
+    const parsed = JSON.parse(txt);
+    if (Array.isArray(parsed)) return parsed as Metadata[];
+    if (parsed && typeof parsed === "object") {
+      return Object.entries(parsed as Record<string, string>).map(([k, v]) => ({ id: k, name: k, value: String(v) }));
+    }
+  } catch {}
+  const out: Metadata[] = [];
+  const parts = txt.split(/[\r\n;]+/).map((p) => p.trim()).filter(Boolean);
+  for (const p of parts) {
+    const m = p.match(/^\s*([^=:#]+)\s*[:=]\s*(.*)\s*$/);
+    if (m) out.push({ id: m[1].trim(), name: m[1].trim(), value: m[2].trim() });
+  }
+  return out;
+}
+
+function extractJobId(data: any): string {
+  try {
+    const obj = typeof data === "string" ? JSON.parse(data) : data;
+    return String(obj?.jobId ?? obj?.id ?? obj?.data?.id ?? obj?.data?.jobId ?? "");
+  } catch {
+    return "";
+  }
+}
+
+// Simple unique id generator (hex timestamp + random) to mirror old engine sending non-empty id
+function generateClientId(): string {
+  const t = Date.now().toString(16);
+  const r = Math.floor(Math.random() * 0xffffffff).toString(16).padStart(8, "0");
+  return (t + r).slice(0, 24);
+}
 
 export default class EVSConnector extends Node {
   specification = {
     specVersion: 2,
-    name: "EVS Connector", // Name der Node
+    name: "EVS Connector",
     originalName: "EVS Connector",
-    description: "Starts an EVS Connector job and monitors its progress.", // Beschreibung
+    description: "Transfers a video file via EVS Connector API and creates a transfer job (POST /evsconn/v1/job).",
     kind: "NODE",
-    category: "EVS", // Kategorie (kann angepasst werden)
-    color: "node-blue", // Farbe (kann angepasst werden)
-    version: { major: 1, minor: 0, patch: 0, changelog: ["Initial release"] },
-    author: {
-      name: "Your Name", // Bitte anpassen
-      company: "MoovIT SP",
-      email: "your.email@moovit-sp.com", // Bitte anpassen
-    },
+    category: "Transfer",
+    color: "node-aquaGreen",
+    version: { major: 1, minor: 4, patch: 0, changelog: ["Align payload with legacy engine: always include id, include marker: [], default metadatasetName='general' when metadata present; raw JSON with Content-Length"] },
+    author: { name: "Code Copilot", company: "Community", email: "n/a" },
     inputs: [
-      { name: InputName.HOST_URL, description: "EVS Connector Host URL (e.g., http://10.204.41.100:8084)", type: "STRING" as InputType, example: "http://10.204.41.100:8084", mandatory: true },
-      { name: InputName.TARGET_NAME, description: "Destination system or logical target name.", type: "STRING" as InputType, example: "XSquare_Target", mandatory: true },
-      { name: InputName.TARGET_ID, description: "Identifier of the destination target (e.g. xsquare target id).", type: "STRING" as InputType, example: "xs-target-123", mandatory: true },
-      {
-        name: InputName.XSQ_PRIORITY,
-        description: "Optional priority value for XSquare.",
-        // HIER IST DIE ZWEITE KORREKTUR: "ENUM" wurde zu "STRING_SELECT"
-        type: "STRING_SELECT" as InputType,
-        example: "Medium",
-        mandatory: true,
-        defaultValue: "Medium",
-        options: [ // Basierend auf dem Java Enum
-          { name: "High", value: "High" },
-          { name: "Medium", value: "Medium" },
-          { name: "Low", value: "Low" },
-        ],
-      },
-      { name: InputName.METADATA_SET_NAME, description: "XSquare metadata profile name.", type: "STRING" as InputType, example: "default_profile", mandatory: true },
-      { name: InputName.FILEPATH, description: "Path of the file to be transferred (Windows path format).", type: "STRING" as InputType, example: "D:\\Path\\To\\File.mxf", mandatory: true },
-      { name: InputName.METADATA, description: "A JSON string representing the metadata array (see JobDTO).", type: "STRING" as InputType, example: "[{\"id\": \"title\", \"value\": \"My Video\"}]", mandatory: false, defaultValue: "[]" },
-      { name: InputName.MARKERS, description: "A JSON string representing the marker array (see JobDTO).", type: "STRING" as InputType, example: "[{\"name\": \"Clip 1\", \"startPoint\": \"00:00:10:00:25/1\"}]", mandatory: false, defaultValue: "[]" },
+      { name: InputName.HOST_URL, description: "Base URL of the EVS Connector (no path).", type: "STRING" as InputType, example: "http://10.0.0.1:8084", mandatory: true },
+      { name: InputName.TARGET_NAME, description: "XSquare target name.", type: "STRING" as InputType, example: "XSquareTarget", mandatory: true },
+      { name: InputName.TARGET_ID, description: "XSquare target ID.", type: "STRING" as InputType, example: "123", mandatory: true },
+      { name: InputName.XSQUARE_PRIORITY, description: "XSquare priority (optional).", type: "STRING" as InputType, example: "High", mandatory: false },
+      { name: InputName.METADATASET_NAME, description: "Metadataset name (optional).", type: "STRING" as InputType, example: "general", mandatory: false },
+      { name: InputName.FILEPATH, description: "Full path to the video file to transfer.", type: "STRING" as InputType, example: "\\\\XSTORE\\TEMP\\ADOBETEMP\\25-11-10\\FCW26POC\\Test01\\Test01.mp4", mandatory: true },
+      { name: InputName.METADATA, description: "Metadata as JSON (array/object) or lines: key=value;key2=value2.", type: "STRING" as InputType, example: "title=Clip 01;show=Sports", mandatory: false },
     ],
     outputs: [
-      { name: OutputName.STATUS, description: "HTTP status of the final poll", type: "NUMBER" as OutputType, example: 200 },
-      { name: OutputName.HEADERS, description: "Response headers of the final poll", type: "STRING_MAP" as OutputType, example: { "content-type": "application/json" } },
-      { name: OutputName.BODY, description: "Response body of the final successful poll", type: "JSON" as OutputType, example: "{ \"id\": \"...\", \"status\": \"successful\" }" },
-      { name: OutputName.RUN_TIME, description: "Total execution time (ms)", type: "NUMBER" as OutputType, example: 42000 },
-      { name: OutputName.JOB_ID, description: "The EVS Job ID", type: "STRING" as OutputType, example: "job_12345" },
+      { name: OutputName.STATUS, description: "HTTP status.", type: "NUMBER" as OutputType, example: 201 },
+      { name: OutputName.HEADERS, description: "Response headers.", type: "STRING_MAP" as OutputType, example: { "content-type": "application/json" } },
+      { name: OutputName.BODY, description: "Response body.", type: "STRING" as OutputType, example: "{ id: '...', jobId: '...' }" },
+      { name: OutputName.RUN_TIME, description: "Execution time in milliseconds.", type: "NUMBER" as OutputType, example: 42 },
+      { name: OutputName.JOB_ID, description: "Job ID reported by the server (if available).", type: "STRING" as OutputType, example: "a1b2c3" },
+      { name: OutputName.REQUEST, description: "Exact JSON request body that was sent.", type: "STRING" as OutputType, example: "{\"name\":\"file.mov\"}" },
     ],
   };
 
   async execute(): Promise<void> {
     const started = Date.now();
 
-    // 1. Inputs abrufen
-    const host = normalizeBase(String(this.wave.inputs.getInputValueByInputName(InputName.HOST_URL) ?? ""));
-    const targetName = String(this.wave.inputs.getInputValueByInputName(InputName.TARGET_NAME) ?? "");
-    const targetId = String(this.wave.inputs.getInputValueByInputName(InputName.TARGET_ID) ?? "");
-    const xsquarePrio = String(this.wave.inputs.getInputValueByInputName(InputName.XSQ_PRIORITY) ?? "Medium");
-    const metadataSetName = String(this.wave.inputs.getInputValueByInputName(InputName.METADATA_SET_NAME) ?? "");
-    const filepath = String(this.wave.inputs.getInputValueByInputName(InputName.FILEPATH) ?? "");
-    const metadataStr = String(this.wave.inputs.getInputValueByInputName(InputName.METADATA) ?? "[]");
-    const markersStr = String(this.wave.inputs.getInputValueByInputName(InputName.MARKERS) ?? "[]");
+    const baseUrl = normalizeBase(String(this.wave.inputs.getInputValueByInputName(InputName.HOST_URL) ?? ""));
+    const targetName = String(this.wave.inputs.getInputValueByInputName(InputName.TARGET_NAME) ?? "").trim();
+    const targetId = String(this.wave.inputs.getInputValueByInputName(InputName.TARGET_ID) ?? "").trim();
+    const xsquarePriority = String(this.wave.inputs.getInputValueByInputName(InputName.XSQUARE_PRIORITY) ?? "").trim();
+    const metadatasetNameRaw = String(this.wave.inputs.getInputValueByInputName(InputName.METADATASET_NAME) ?? "").trim();
+    const fileToTransfer = String(this.wave.inputs.getInputValueByInputName(InputName.FILEPATH) ?? "").trim();
+    const metadataRaw = String(this.wave.inputs.getInputValueByInputName(InputName.METADATA) ?? "");
 
-    // 2. Kontext vom High5-Job abrufen (entspricht streamWorkerImpl.getJob() in Java)
-    const evsJobId = this.wave.job?.id ?? `job_${Date.now()}`;
-    const evsJobName = this.wave.job?.name ?? "Untitled EVS Job";
+    if (!baseUrl) throw new Error("HOST URL is required");
+    if (!targetName) throw new Error("Target Name is required");
+    if (!targetId) throw new Error("TargetID is required");
+    if (!fileToTransfer) throw new Error("filepath is required");
 
-    // 3. JSON-Inputs parsen
-    let metadata: any[];
-    let markers: any[];
+    const url = `${baseUrl}/evsconn/v1/job`;
+    const name = fileToTransfer.split(/[\\/]/).pop() || fileToTransfer;
+
+    const metadata = parseMetadata(metadataRaw);
+    // If metadata is present and no metadataset provided, use 'general' like the working sample
+    const metadatasetName = metadata.length && !metadatasetNameRaw ? "general" : metadatasetNameRaw || undefined;
+
+    const payload: JobDTO = clean({
+      id: generateClientId(),           // legacy engine provided a job id -> provide one, too
+      name,
+      metadata: metadata.length ? metadata : undefined,
+      marker: [],                        // legacy payload shows empty array
+      targetName,
+      targetId,
+      xsquarePriority: xsquarePriority || undefined, // "High" etc.
+      metadatasetName,
+      fileToTransfer,
+    });
+
+    // Raw JSON + explicit Content-Length to match strict servers
+    const json = JSON.stringify(payload);
+    const contentLength = Buffer.byteLength(json).toString();
+
+    this.wave.outputs.setOutput(OutputName.REQUEST, json);
+
     try {
-      metadata = JSON.parse(metadataStr);
-    } catch (e) {
-      throw new Error(`Failed to parse Metadata JSON: ${e.message}. Input was: ${metadataStr}`);
-    }
-    try {
-      markers = JSON.parse(markersStr);
-    } catch (e) {
-      throw new Error(`Failed to parse Markers JSON: ${e.message}. Input was: ${markersStr}`);
-    }
+      const cfg: AxiosRequestConfig = {
+        headers: { "Content-Type": "application/json", "Content-Length": contentLength },
+        validateStatus: () => true,
+        timeout: 60000,
+        transformRequest: [(d) => d],
+        transitional: { forcedJSONParsing: false },
+      };
 
-    // 4. Verbindungstest (wie in Java-Code)
-    try {
-      const infoRes = await axios.get(`${host}/info`, { timeout: 5000 });
-      if (infoRes.status !== 200) throw new Error(`Connection test failed with status ${infoRes.status}`);
-    } catch (e) {
-      throw new Error(`Unable to connect to EVS at ${host}. Error: ${e.message}`);
-    }
+      const res = await axios.post(url, json, cfg);
 
-    // 5. JobDTO erstellen (basierend auf Swagger)
-    const jobDTO = {
-      id: evsJobId,
-      name: evsJobName,
-      metadata: metadata,
-      marker: markers,
-      targetName: targetName,
-      targetId: targetId,
-      xsquarePriority: xsquarePrio,
-      metadatasetName: metadataSetName,
-      fileToTransfer: filepath,
-    };
+      this.wave.outputs.setOutput(OutputName.STATUS, Number(res.status));
+      this.wave.outputs.setOutput(OutputName.HEADERS, res.headers as any);
+      this.wave.outputs.setOutput(OutputName.BODY, prettyBody(res.data, res.headers));
+      this.wave.outputs.setOutput(OutputName.RUN_TIME, Date.now() - started);
 
-    // 6. Job starten (POST /job)
-    try {
-      const postRes = await axios.post(`${host}/job`, jobDTO, {
-        headers: { "Content-Type": "application/json", Accept: "application/json" },
-        validateStatus: () => true, // Alle Statuscodes selbst behandeln
-      });
-
-      // 409 bedeutet "Already exists", was in diesem Workflow ein Fehler ist
-      if (postRes.status >= 400) {
-        throw new Error(`HTTP ${postRes.status} ${postRes.statusText}. Body: ${prettyBody(postRes.data, postRes.headers)}`);
-      }
-    } catch (e) {
-      throw new Error(`Unable to post job to EVS: ${e.message}`);
-    }
-
-    // 7. Polling-Schleife (Hauptlogik aus Java)
-    try {
-      while (true) {
-        // HINWEIS: High5-Framework kümmert sich um Job-Abbruch von außen.
-        // Die Java-Logik `if (streamWorkerImpl.isCanceled())` wird durch
-        // das Beenden des Node-Prozesses durch High5 ersetzt.
-
-        let statusRes;
-        try {
-          statusRes = await axios.get(`${host}/job/status/${evsJobId}`, {
-            headers: { Accept: "application/json" },
-            validateStatus: () => true,
-            timeout: 5000, // Timeout für die Statusabfrage
-          });
-
-          if (statusRes.status >= 400) {
-            throw new Error(`HTTP ${statusRes.status} while fetching job status.`);
-          }
-        } catch (pollError) {
-          throw new Error(`Network error while polling job status: ${pollError.message}`);
-        }
-
-        const jobStatus = statusRes.data; // JobStatusDTO
-        const statusText = (jobStatus?.status || "").toLowerCase();
-        const detailsText = jobStatus?.details || "No details";
-
-        // Status-Prüfung (wie in Java)
-        if (statusText.includes("failed")) {
-          throw new Error(`EVS job failed: ${detailsText}`);
-        }
-
-        if (statusText.includes("cancel")) {
-          throw new Error(`EVS job was canceled: ${detailsText}`);
-        }
-
-        if (statusText.includes("successful")) {
-          // Erfolg! Beende die Schleife und setze Outputs.
-          this.wave.outputs.setOutput(OutputName.STATUS, statusRes.status);
-          this.wave.outputs.setOutput(OutputName.HEADERS, statusRes.headers || {});
-          this.wave.outputs.setOutput(OutputName.BODY, prettyBody(jobStatus, statusRes.headers));
-          this.wave.outputs.setOutput(OutputName.RUN_TIME, Date.now() - started);
-          this.wave.outputs.setOutput(OutputName.JOB_ID, evsJobId);
-          return; // Beendet die execute-Methode erfolgreich
-        }
-
-        // Wenn "running" oder anderer Status: Warten und erneut versuchen
-        await sleep(2000); // 2 Sekunden warten (im Java-Code waren es 1000ms)
-      }
-    } catch (pollError) {
-      // Wenn die Polling-Schleife mit einem Fehler abbricht (z.B. "failed" Status),
-      // versuchen wir, den Job im EVS-System zu stoppen (Cleanup).
       try {
-        await axios.post(`${host}/job/stop/${evsJobId}`, null, {
-          validateStatus: () => true,
-          timeout: 3000,
-        });
-      } catch (stopError) {
-        // Fehler beim Stoppen ignorieren, der ursprüngliche Fehler ist wichtiger
-        console.error(`Failed to send stop command for job ${evsJobId} during cleanup: ${stopError.message}`);
+        const jobId = extractJobId(res.data);
+        this.wave.outputs.setOutput(OutputName.JOB_ID, jobId);
+      } catch {}
+
+      if (res.status >= 400) {
+        throw new Error(`HTTP ${res.status} POST ${url}`);
       }
-      
-      // Den ursprünglichen Fehler weiterwerfen, damit die High5-Node fehlschlägt
-      throw pollError;
+    } catch (e) {
+      const ax = e as AxiosError;
+      const status = ax.response?.status;
+      if (status) this.wave.outputs.setOutput(OutputName.STATUS, Number(status));
+      if (ax.response) {
+        this.wave.outputs.setOutput(OutputName.HEADERS, ax.response.headers as any);
+        this.wave.outputs.setOutput(OutputName.BODY, prettyBody(ax.response.data, ax.response.headers));
+      }
+      this.wave.outputs.setOutput(OutputName.RUN_TIME, Date.now() - started);
+      throw e;
     }
   }
 }
