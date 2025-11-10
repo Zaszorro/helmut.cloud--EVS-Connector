@@ -80,7 +80,7 @@ export default class EVSConnector extends Node {
     kind: "NODE",
     category: "Transfer",
     color: "node-aquaGreen",
-    version: { major: 1, minor: 0, patch: 2, changelog: ["Stricter payload validation & better error messages"] },
+    version: { major: 1, minor: 0, patch: 3, changelog: ["Removed wave.logger usage to match CosmoCreateAsset style"] },
     author: {
       name: "Code Copilot",
       company: "Community",
@@ -226,11 +226,7 @@ export default class EVSConnector extends Node {
       } catch {}
 
       if (res.status >= 400) {
-        const msg =
-          typeof res.data === "string"
-            ? res.data
-            : JSON.stringify(res.data, null, 2);
-        this.wave.logger.error(`EVS Connector error ${res.status} — response: ${msg}`);
+        // throw to signal failure to the workflow engine; details are already in outputs
         throw new Error(`HTTP ${res.status} POST ${url}`);
       }
     } catch (e) {
