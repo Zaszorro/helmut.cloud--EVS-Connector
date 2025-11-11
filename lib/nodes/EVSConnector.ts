@@ -25,7 +25,6 @@ enum OutputName {
 
 function normalizeBase(hostUrl: string): string {
   const t = (hostUrl || "").trim().replace(/\/+$/g, "");
-  // Ensure base ends at /evsconn/v1
   if (/\/evsconn\/v1$/i.test(t)) return t;
   if (/\/evsconn\/v1\//i.test(t)) return t.replace(/\/+$/g, "").replace(/\/$/, "");
   return `${t}/evsconn/v1`;
@@ -44,17 +43,20 @@ function prettyBody(data: any, headers: any): string {
   try { return JSON.stringify(data ?? null, null, 2); } catch { return String(data); }
 }
 
-// EVS Swagger reference: see evsconnectorswagger.json (JobDTO/JobStatusDTO)
+function makeClientJobId(): string {
+  return `${Date.now()}-${Math.random().toString(36).slice(2)}`;
+}
+
 export default class EVSConnector extends Node {
   specification = {
     specVersion: 2,
     name: "EVS Connector",
     originalName: "EVS Connector",
-    description: "Submits a transfer job to the EVS Connector and outputs the server job id. (No polling)",
+    description: "Creates a job on the EVS Connector and outputs the job id. (No polling)",
     kind: "NODE",
     category: "EVS",
     color: "node-aquaGreen",
-    version: { major: 1, minor: 1, patch: 0, changelog: ["Create-only mode: remove polling, output server Job Id"] },
+    version: { major: 1, minor: 1, patch: 1, changelog: ["Create-only mode", "Include client id in request, output same id"] },
     author: {
       name: "MoovIT SP",
       company: "MoovIT SP",
@@ -74,7 +76,7 @@ export default class EVSConnector extends Node {
       { name: OutputName.HEADERS, description: "Response headers from POST /job", type: "STRING_MAP" as OutputType, example: { "content-type": "application/json" } },
       { name: OutputName.BODY, description: "Response body from POST /job", type: "STRING" as OutputType, example: "{ id: '...', status: '...' }" },
       { name: OutputName.RUN_TIME, description: "Execution time (ms) of the POST call", type: "NUMBER" as OutputType, example: 42 },
-      { name: OutputName.JOB_ID, description: "Server-provided job id returned by POST /job", type: "STRING" as OutputType, example: "1762853233578-662iviwq53p" },
+      { name: OutputName.JOB_ID, description: "Job ID used for manual polling (client-provided)", type: "STRING" as OutputType, example: "1762853233578-662iviwq53p" },
     ],
   };
 
@@ -94,23 +96,23 @@ export default class EVSConnector extends Node {
     if (!targetId) throw new Error("Target ID is required");
     if (!filePath) throw new Error("File Path is required");
 
-    // Parse metadata: allow array or simple key-value map
+    // Prepare metadata
     let metadata: any[] | undefined = undefined;
     if (metadataRaw) {
       try {
         const parsed = JSON.parse(metadataRaw);
-        if (Array.isArray(parsed)) {
-          metadata = parsed;
-        } else if (parsed && typeof parsed === "object") {
+        if (Array.isArray(parsed)) metadata = parsed;
+        else if (parsed && typeof parsed === "object") {
           metadata = Object.entries(parsed).map(([k, v]) => ({ id: String(k), name: String(k), value: String(v ?? "") }));
         }
-      } catch {
-        // ignore invalid metadata JSON
-      }
+      } catch { /* ignore invalid metadata */ }
     }
 
     const name = toJobNameFromPath(filePath);
+    const clientJobId = makeClientJobId();
+
     const body: any = {
+      id: clientJobId, // allow server to reuse client-provided id
       name,
       targetName,
       targetId,
@@ -124,41 +126,17 @@ export default class EVSConnector extends Node {
     const res = await axios.request({
       method: "POST",
       url,
-      headers: {
-        "Content-Type": "application/json",
-        Accept: "application/json",
-      },
+      headers: { "Content-Type": "application/json", Accept: "application/json" },
       data: body,
       validateStatus: () => true,
     });
 
-    // Outputs
+    // Always provide the Job ID we used for creation, so user can poll manually
+    this.wave.outputs.setOutput(OutputName.JOB_ID, clientJobId);
     this.wave.outputs.setOutput(OutputName.STATUS, res.status);
     this.wave.outputs.setOutput(OutputName.HEADERS, res.headers || {});
     this.wave.outputs.setOutput(OutputName.BODY, prettyBody(res.data, res.headers));
     this.wave.outputs.setOutput(OutputName.RUN_TIME, Date.now() - started);
-
-    // Prefer the server-provided id (robust extraction)
-    let serverJobId: string = "";
-    try {
-      if (res && typeof res.data === "object" && res.data) {
-        if ("id" in res.data) serverJobId = String((res.data as any).id);
-        else if ("jobId" in res.data) serverJobId = String((res.data as any).jobId);
-      } else if (typeof res.data === "string") {
-        // Try JSON parse first
-        try { const obj = JSON.parse(res.data); if (obj?.id) serverJobId = String(obj.id); }
-        catch { /* not JSON */ }
-        if (!serverJobId) {
-          // Regex fallback
-          const m = res.data.match(/"id"\s*:\s*"([^"]+)"/);
-          if (m) serverJobId = m[1];
-        }
-      }
-      if (!serverJobId && res?.headers && typeof res.headers["x-job-id"] === "string") {
-        serverJobId = String(res.headers["x-job-id"]);
-      }
-    } catch {}
-    this.wave.outputs.setOutput(OutputName.JOB_ID, serverJobId);
 
     if (res.status >= 400) {
       throw new Error(`HTTP ${res.status} POST ${url}`);

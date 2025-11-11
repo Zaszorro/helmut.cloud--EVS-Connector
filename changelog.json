@@ -1,4 +1,15 @@
 [{
+    "version": "1.0.20",
+    "date": "2025-11-11",
+    "changes": [
+      {
+        "description": "Fixed Bug with changelog generation script",
+        "type": "Bug Fixes",
+        "breaking": false
+      }
+    ]
+  },
+  {
     "version": "1.0.19",
     "date": "2025-11-11",
     "changes": [
