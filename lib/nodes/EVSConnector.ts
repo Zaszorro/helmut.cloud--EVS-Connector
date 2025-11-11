@@ -61,7 +61,7 @@ function makeClientJobId(): string {
  * - GET  /evsconn/v1/job/status/{jobId} (poll status)
  */
 export default class EVSConnector extends Node {
-  spec = {
+  specification = {
     specVersion: 2,
     name: "EVS Connector",
     originalName: "EVS Connector",
