@@ -54,6 +54,7 @@ function makeClientJobId(): string { return `${Date.now()}-${Math.random().toStr
 export default class EVSConnector extends Node {
   specification = {
     specVersion: 3,
+    deprecated: false,
     name: "EVS Connector",
     originalName: "EVS Connector",
     description: "Creates an EVS Connector job, then polls status every 5s and streams dashboard progress.",
