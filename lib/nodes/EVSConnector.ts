@@ -76,7 +76,7 @@ export default class EVSConnector extends Node {
       email: "support@helmut.cloud",
     },
     inputs: [
-      { name: InputName.HOST_URL, description: "Base URL of the EVS Connector (e.g. http://host:8084 or http://host:8084/evsconn/v1)", type: "STRING" as InputType, example: "http://10.0.0.1:8084", mandatory: true },
+      { name: InputName.HOST_URL, description: "Base URL of the EVS Connector (e.g. http://host:8084", type: "STRING" as InputType, example: "http://10.0.0.1:8084", mandatory: true },
       { name: InputName.TARGET_NAME, description: "Destination system or logical target name", type: "STRING" as InputType, example: "XSquare", mandatory: true },
       { name: InputName.TARGET_ID, description: "Identifier of the destination target (e.g. XSquare target id)", type: "STRING" as InputType, example: "xq-target-01", mandatory: true },
       { name: InputName.XSQUARE_PRIORITY, description: "Optional XSquare priority", type: "STRING" as InputType, example: "5", mandatory: false },
