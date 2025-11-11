@@ -1,4 +1,15 @@
 [{
+    "version": "1.0.23",
+    "date": "2025-11-11",
+    "changes": [
+      {
+        "description": "Added polling logic to the EVS connecgtor node and an additional dashboard outpu",
+        "type": "Features",
+        "breaking": false
+      }
+    ]
+  },
+  {
     "version": "1.0.22",
     "date": "2025-11-11",
     "changes": [

@@ -204,14 +204,12 @@ export default class EVSConnector extends Node {
         lastProgress = Number.isFinite(p) ? Number(p) : lastProgress;
       } catch { /* keep previous */ }
 
-      // Emit dashboard progress when integer increases
+      // Emit dashboard progress on EVERY poll (even if unchanged) to keep UI alive
       const emit = Number.isFinite(lastProgress) ? Math.floor(Number(lastProgress)) : 0;
-      if (emit > lastEmitted) {
-        try { this.wave.logger.updateProgress(emit); } catch {}
-        this.wave.outputs.setOutput(OutputName.PROGRESS, emit);
-        this.wave.outputs.executeAdditionalConnector(OutputName.PROGRESS);
-        lastEmitted = emit;
-      }
+      try { this.wave.logger.updateProgress(emit); } catch {}
+      this.wave.outputs.setOutput(OutputName.PROGRESS, emit);
+      this.wave.outputs.executeAdditionalConnector(OutputName.PROGRESS);
+      lastEmitted = emit;
 
       // Stop when: status == "EVS Checkin Successful" OR progress >= 1 OR progress >= 100 OR generic terminal
       const statusUpper = (lastStatus || "").toUpperCase();
