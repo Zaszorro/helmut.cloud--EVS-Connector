@@ -23,6 +23,8 @@ enum OutputName {
   JOB_ID = "Job Id",
   JOB_STATUS = "Job Status",
   JOB_PROGRESS = "Job Progress",
+  POLL_BODY = "Polling body",
+  PROGRESS = "Progress",
 }
 
 function normalizeBase(hostUrl: string): string {
@@ -69,7 +71,7 @@ export default class EVSConnector extends Node {
     kind: "NODE",
     category: "EVS",
     color: "node-aquaGreen",
-    version: { major: 1, minor: 0, patch: 2, changelog: ["English labels, robust polling, metadata parsing", "Fix: explicit parentheses for ?? with ||"] },
+    version: { major: 1, minor: 0, patch: 4, changelog: ["English labels, robust polling, metadata parsing", "Fix: explicit parentheses for ?? with ||", "Add output \"Polling body\"", "Add numeric PROGRESS output, additionalConnector, 5s polling" ] },
     author: {
       name: "David Merzenich",
       company: "MoovIT SP",
@@ -92,6 +94,11 @@ export default class EVSConnector extends Node {
       { name: OutputName.JOB_ID, description: "Client-side job id used for polling", type: "STRING" as OutputType, example: "1731312345678-abc123" },
       { name: OutputName.JOB_STATUS, description: "Final job status", type: "STRING" as OutputType, example: "COMPLETED" },
       { name: OutputName.JOB_PROGRESS, description: "Final reported job progress (0-100)", type: "NUMBER" as OutputType, example: 100 },
+      { name: OutputName.PROGRESS, description: "Returns the current progress percentage of the EVS job", type: "NUMBER" as OutputType, example: 87 },
+      { name: OutputName.POLL_BODY, description: "Final response body retrieved from the polling endpoint", type: "STRING" as OutputType, example: "{ \"status\": \"COMPLETED\", \"progress\": 100 }" },
+    ],
+    additionalConnectors: [
+      { name: OutputName.PROGRESS, description: "Executed for every percent (limited to 1/s)" },
     ],
   };
 
@@ -117,6 +124,10 @@ export default class EVSConnector extends Node {
     // Parse metadata: allow array of Metadata or simple { key: value } map
     let metadata: any[] | undefined = undefined;
     if (metadataRaw) {
+      // Keep last polling response for output
+      lastPollRaw = stat.data;
+      lastPollHeaders = stat.headers;
+
       try {
         const parsed = JSON.parse(metadataRaw);
         if (Array.isArray(parsed)) {
@@ -165,7 +176,7 @@ export default class EVSConnector extends Node {
     // Poll job status until terminal state
     const pollUrl = `${base}/job/status/${encodeURIComponent(jobId)}`;
     const terminal = new Set(["COMPLETED", "FAILED", "CANCELED", "CANCELLED", "SUCCESS", "SUCCESSFUL"]);
-    let lastStatus: string = "";
+    let lastStatus: string = ""; let lastPollRaw: any = null; let lastPollHeaders: any = null; let lastEmittedProgress = -1;
     let lastProgress: number = 0;
 
     const deadline = Date.now() + 1000 * 60 * 30; // 30 minutes safety
@@ -176,6 +187,10 @@ export default class EVSConnector extends Node {
         headers: { Accept: "application/json" },
         validateStatus: () => true,
       });
+
+      // Keep last polling response for output
+      lastPollRaw = stat.data;
+      lastPollHeaders = stat.headers;
 
       try {
         const data = typeof stat.data === "string" ? JSON.parse(stat.data) : stat.data;
@@ -188,17 +203,40 @@ export default class EVSConnector extends Node {
       }
 
       // Update High5/Wave engine's visible progress if available
+      // Keep last polling response for output
+      lastPollRaw = stat.data;
+      lastPollHeaders = stat.headers;
+
       try {
         // @ts-ignore optional engine helper
         this.wave?.progress?.setProgress?.(lastProgress ?? 0, lastStatus || "RUNNING");
       } catch {}
 
+      // Emit progress updates when integer percent increases
+      const emit = Number.isFinite(lastProgress) ? Math.floor(Number(lastProgress)) : 0;
+      if (emit > lastEmittedProgress) {
+        try { this.wave.logger.updateProgress(emit); } catch {}
+        this.wave.outputs.setOutput(OutputName.PROGRESS, emit);
+        this.wave.outputs.executeAdditionalConnector(OutputName.PROGRESS);
+        lastEmittedProgress = emit;
+      }
+
       if (terminal.has((lastStatus || "").toUpperCase())) break;
-      await sleep(1000 * 2);
+      await sleep(1000 * 5); // poll every 5 seconds
     }
 
     this.wave.outputs.setOutput(OutputName.JOB_STATUS, lastStatus || "UNKNOWN");
     this.wave.outputs.setOutput(OutputName.JOB_PROGRESS, Number.isFinite(lastProgress) ? lastProgress : 0);
+    this.wave.outputs.setOutput(OutputName.POLL_BODY, prettyBody(lastPollRaw, lastPollHeaders));
+
+    // Final progress emit on completion
+    const finalEmit = Number.isFinite(lastProgress) ? Math.floor(Number(lastProgress)) : 0;
+    if (finalEmit > lastEmittedProgress) {
+      try { this.wave.logger.updateProgress(finalEmit); } catch {}
+      this.wave.outputs.setOutput(OutputName.PROGRESS, finalEmit);
+      this.wave.outputs.executeAdditionalConnector(OutputName.PROGRESS);
+      lastEmittedProgress = finalEmit;
+    }
 
     if (!terminal.has((lastStatus || "").toUpperCase())) {
       throw new Error(`Polling timed out for job ${jobId} (last status: ${lastStatus || "UNKNOWN"})`);
