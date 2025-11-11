@@ -6,13 +6,13 @@ type InputType = "STRING" | "STRING_PASSWORD" | "NUMBER" | "BOOLEAN";
 type OutputType = "NUMBER" | "STRING" | "STRING_MAP" | "STRING_ARRAY";
 
 enum InputName {
-  HOST_URL = "HOST URL",
+  HOST_URL = "Host URL",
   TARGET_NAME = "Target Name",
-  TARGET_ID = "TargetID",
-  XSQUARE_PRIORITY = "XSquare priority",
-  METADATA_SET_NAME = "Meadats set name",
-  FILEPATH = "filepath",
-  METADATA = "Metadaten",
+  TARGET_ID = "Target ID",
+  XSQUARE_PRIORITY = "XSquare Priority",
+  METADATA_SET_NAME = "Metadata Set Name",
+  FILE_PATH = "File Path",
+  METADATA = "Metadata",
 }
 
 enum OutputName {
@@ -27,7 +27,7 @@ enum OutputName {
 
 function normalizeBase(hostUrl: string): string {
   const t = (hostUrl || "").trim().replace(/\/+$/g, "");
-  // Allow user to pass full base or just host; always ensure we end at /evsconn/v1
+  // Ensure base ends at /evsconn/v1 (according to Swagger paths)
   if (/\/evsconn\/v1$/i.test(t)) return t;
   if (/\/evsconn\/v1\//i.test(t)) return t.replace(/\/+$/g, "").replace(/\/$/, "");
   return `${t}/evsconn/v1`;
@@ -51,22 +51,25 @@ function sleep(ms: number) {
 }
 
 function makeClientJobId(): string {
-  // stable-ish unique id for this execution
   const rnd = Math.random().toString(36).slice(2);
   return `${Date.now()}-${rnd}`;
 }
 
-// EVS Swagger reference: see evsconnectorswagger.json (JobDTO/JobStatusDTO)
+/**
+ * EVS Connector
+ * - POST /evsconn/v1/job       (submit job)
+ * - GET  /evsconn/v1/job/status/{jobId} (poll status)
+ */
 export default class EVSConnector extends Node {
   spec = {
     specVersion: 2,
     name: "EVS Connector",
     originalName: "EVS Connector",
-    description: "Posts a transfer job to the EVS Connector and polls its status until completion.",
+    description: "Submits a transfer job to the EVS Connector and polls its status until completion.",
     kind: "NODE",
     category: "EVS",
     color: "node-aquaGreen",
-    version: { major: 1, minor: 0, patch: 0, changelog: ["Initial release"] },
+    version: { major: 1, minor: 0, patch: 2, changelog: ["English labels, robust polling, metadata parsing", "Fix: explicit parentheses for ?? with ||"] },
     author: {
       name: "David Merzenich",
       company: "MoovIT SP",
@@ -75,10 +78,10 @@ export default class EVSConnector extends Node {
     inputs: [
       { name: InputName.HOST_URL, description: "Base URL of the EVS Connector (e.g. http://host:8084 or http://host:8084/evsconn/v1)", type: "STRING" as InputType, example: "http://10.0.0.1:8084", mandatory: true },
       { name: InputName.TARGET_NAME, description: "Destination system or logical target name", type: "STRING" as InputType, example: "XSquare", mandatory: true },
-      { name: InputName.TARGET_ID, description: "Identifier of the destination target (e.g. XSquare target id)", type: "STRING" as InputType, example: "tsq-target-01", mandatory: true },
+      { name: InputName.TARGET_ID, description: "Identifier of the destination target (e.g. XSquare target id)", type: "STRING" as InputType, example: "xq-target-01", mandatory: true },
       { name: InputName.XSQUARE_PRIORITY, description: "Optional XSquare priority", type: "STRING" as InputType, example: "5", mandatory: false },
       { name: InputName.METADATA_SET_NAME, description: "XSquare metadata profile name", type: "STRING" as InputType, example: "DefaultMeta", mandatory: false },
-      { name: InputName.FILEPATH, description: "Path of the file to transfer", type: "STRING" as InputType, example: "C:/media/clip01.mov", mandatory: true },
+      { name: InputName.FILE_PATH, description: "Path of the file to transfer", type: "STRING" as InputType, example: "C:/media/clip01.mov", mandatory: true },
       { name: InputName.METADATA, description: "Metadata as JSON (array of objects or simple key-value map)", type: "STRING" as InputType, example: "[{ \"id\": \"title\", \"value\": \"My Clip\" }]", mandatory: false },
     ],
     outputs: [
@@ -100,16 +103,16 @@ export default class EVSConnector extends Node {
     const targetId = String(this.wave.inputs.getInputValueByInputName(InputName.TARGET_ID) ?? "").trim();
     const xsquarePriority = String(this.wave.inputs.getInputValueByInputName(InputName.XSQUARE_PRIORITY) ?? "").trim();
     const metadatasetName = String(this.wave.inputs.getInputValueByInputName(InputName.METADATA_SET_NAME) ?? "").trim();
-    const filepath = String(this.wave.inputs.getInputValueByInputName(InputName.FILEPATH) ?? "").trim();
+    const filePath = String(this.wave.inputs.getInputValueByInputName(InputName.FILE_PATH) ?? "").trim();
     const metadataRaw = String(this.wave.inputs.getInputValueByInputName(InputName.METADATA) ?? "").trim();
 
-    if (!base) throw new Error("HOST URL is required");
+    if (!base) throw new Error("Host URL is required");
     if (!targetName) throw new Error("Target Name is required");
-    if (!targetId) throw new Error("TargetID is required");
-    if (!filepath) throw new Error("filepath is required");
+    if (!targetId) throw new Error("Target ID is required");
+    if (!filePath) throw new Error("File Path is required");
 
     const jobId = makeClientJobId();
-    const name = toJobNameFromPath(filepath);
+    const name = toJobNameFromPath(filePath);
 
     // Parse metadata: allow array of Metadata or simple { key: value } map
     let metadata: any[] | undefined = undefined;
@@ -131,7 +134,7 @@ export default class EVSConnector extends Node {
       name,
       targetName,
       targetId,
-      fileToTransfer: filepath,
+      fileToTransfer: filePath,
     };
     if (xsquarePriority) body.xsquarePriority = xsquarePriority;
     if (metadatasetName) body.metadatasetName = metadatasetName;
@@ -176,15 +179,17 @@ export default class EVSConnector extends Node {
 
       try {
         const data = typeof stat.data === "string" ? JSON.parse(stat.data) : stat.data;
-        lastStatus = String(data?.status ?? lastStatus || "RUNNING");
-        lastProgress = Number.isFinite(data?.progress) ? Number(data.progress) : lastProgress;
+        // Explicit parentheses to satisfy esbuild rule: x ?? (y || z)
+        lastStatus = String(data?.status ?? (lastStatus || "RUNNING"));
+        const p = (data?.progress ?? lastProgress);
+        lastProgress = Number.isFinite(p) ? Number(p) : lastProgress;
       } catch {
         // keep previous
       }
 
-      // Update Wave engine's visible progress if available
+      // Update High5/Wave engine's visible progress if available
       try {
-        // @ts-ignore - not part of public typings; engine may provide a helper
+        // @ts-ignore optional engine helper
         this.wave?.progress?.setProgress?.(lastProgress ?? 0, lastStatus || "RUNNING");
       } catch {}
 
