@@ -20,7 +20,7 @@ enum OutputName {
   HEADERS = "Headers",
   BODY = "Body",
   RUN_TIME = "Run time",
-  JOB_ID = "Job Id",
+  JOB_ID = "Job ID",
 }
 
 function normalizeBase(hostUrl: string): string {
@@ -138,9 +138,26 @@ export default class EVSConnector extends Node {
     this.wave.outputs.setOutput(OutputName.BODY, prettyBody(res.data, res.headers));
     this.wave.outputs.setOutput(OutputName.RUN_TIME, Date.now() - started);
 
-    // Prefer the server-provided id
-    const serverJobId: string =
-      (typeof res.data === "object" && res.data && "id" in res.data) ? String(res.data.id) : "";
+    // Prefer the server-provided id (robust extraction)
+    let serverJobId: string = "";
+    try {
+      if (res && typeof res.data === "object" && res.data) {
+        if ("id" in res.data) serverJobId = String((res.data as any).id);
+        else if ("jobId" in res.data) serverJobId = String((res.data as any).jobId);
+      } else if (typeof res.data === "string") {
+        // Try JSON parse first
+        try { const obj = JSON.parse(res.data); if (obj?.id) serverJobId = String(obj.id); }
+        catch { /* not JSON */ }
+        if (!serverJobId) {
+          // Regex fallback
+          const m = res.data.match(/"id"\s*:\s*"([^"]+)"/);
+          if (m) serverJobId = m[1];
+        }
+      }
+      if (!serverJobId && res?.headers && typeof res.headers["x-job-id"] === "string") {
+        serverJobId = String(res.headers["x-job-id"]);
+      }
+    } catch {}
     this.wave.outputs.setOutput(OutputName.JOB_ID, serverJobId);
 
     if (res.status >= 400) {
