@@ -46,17 +46,137 @@ function sleep(ms: number) { return new Promise(r => setTimeout(r, ms)); }
 
 function makeClientJobId(): string { return `${Date.now()}-${Math.random().toString(36).slice(2)}`; }
 
-type NormalizedMetadataEntry = { id: string; value: string };
+const METADATA_TYPES = [
+  "STRING",
+  "INTEGER",
+  "BOOLEAN",
+  "DATE",
+  "DATETIME",
+  "TAG",
+  "TAG_ARRAY",
+  "TIME",
+  "AUTOCOMPLETE",
+  "SELECT",
+  "MULTISELECT",
+  "TYPEAHEAD",
+  "CHOOSE_FOLDER",
+] as const;
+
+type MetadataType = typeof METADATA_TYPES[number];
+const METADATA_TYPE_SET = new Set<string>(METADATA_TYPES);
+
+type NormalizedMetadataSet = { id?: string; name?: string; tags?: string[] };
+
+type NormalizedMetadataEntry = {
+  id: string;
+  parent?: NormalizedMetadataSet[];
+  name?: string;
+  type?: MetadataType;
+  values?: string[];
+  value?: string;
+  readonly?: boolean;
+  mandatory?: boolean;
+  disabled?: boolean;
+  hide?: boolean;
+  regex?: string;
+  tags?: string[];
+};
+
+function toTrimmedString(value: any): string | undefined {
+  if (value === undefined || value === null) return undefined;
+  const out = String(value).trim();
+  return out ? out : undefined;
+}
+
+function toOptionalString(value: any): string | undefined {
+  if (value === undefined || value === null) return undefined;
+  return typeof value === "string" ? value : String(value);
+}
+
+function toStringArray(value: any): string[] | undefined {
+  if (!Array.isArray(value)) return undefined;
+  const arr = value.map((entry) => String(entry)).map((entry) => entry.trim()).filter(Boolean);
+  return arr.length ? arr : undefined;
+}
+
+function normalizeMetadataSet(input: any): NormalizedMetadataSet | undefined {
+  if (input === undefined || input === null) return undefined;
+  if (typeof input === "string" || typeof input === "number") {
+    const idOrName = toTrimmedString(input);
+    return idOrName ? { id: idOrName } : undefined;
+  }
+  if (typeof input !== "object") return undefined;
+  const id = toTrimmedString((input as any).id);
+  const name = toTrimmedString((input as any).name);
+  const tags = toStringArray((input as any).tags);
+  if (!id && !name && !tags) return undefined;
+  const normalized: NormalizedMetadataSet = {};
+  if (id) normalized.id = id;
+  if (name) normalized.name = name;
+  if (tags) normalized.tags = tags;
+  return normalized;
+}
+
+function normalizeMetadataParent(raw: any): NormalizedMetadataSet[] | undefined {
+  if (raw === undefined || raw === null) return undefined;
+  const candidates = Array.isArray(raw) ? raw : [raw];
+  const normalized = candidates.map(normalizeMetadataSet).filter((entry): entry is NormalizedMetadataSet => Boolean(entry));
+  return normalized.length ? normalized : undefined;
+}
 
 function normalizeMetadataEntry(entry: any): NormalizedMetadataEntry | undefined {
   if (!entry || typeof entry !== "object") return undefined;
+
   const rawId = "id" in entry ? entry.id : ("name" in entry ? entry.name : undefined);
-  if (typeof rawId !== "string" && typeof rawId !== "number") return undefined;
-  const id = String(rawId).trim();
+  const id = toTrimmedString(rawId);
   if (!id) return undefined;
-  const valueRaw = "value" in entry ? entry.value : undefined;
-  const value = valueRaw === undefined || valueRaw === null ? "" : String(valueRaw);
-  return { id, value };
+
+  const normalized: NormalizedMetadataEntry = { id };
+
+  const parent = normalizeMetadataParent(
+    (entry as any).parent ?? (entry as any).parents ?? (entry as any).metadataSet ?? (entry as any).metadataSets
+  );
+  if (parent) normalized.parent = parent;
+
+  const name = toTrimmedString((entry as any).name);
+  if (name) normalized.name = name;
+
+  const type = toTrimmedString((entry as any).type)?.toUpperCase();
+  if (type && METADATA_TYPE_SET.has(type)) normalized.type = type as MetadataType;
+
+  const values = toStringArray((entry as any).values);
+  if (values) normalized.values = values;
+
+  if ("value" in entry) {
+    const value = (entry as any).value;
+    if (value === null || value === undefined) {
+      normalized.value = "";
+    } else if (typeof value === "string") {
+      normalized.value = value;
+    } else if (typeof value === "number" || typeof value === "boolean") {
+      normalized.value = String(value);
+    } else {
+      try {
+        normalized.value = JSON.stringify(value);
+      } catch {
+        normalized.value = String(value);
+      }
+    }
+  }
+
+  (["readonly", "mandatory", "disabled", "hide"] as const).forEach((flag) => {
+    if (flag in entry) {
+      normalized[flag] = Boolean((entry as Record<string, any>)[flag]);
+    }
+  });
+
+  const regex = toOptionalString((entry as any).regex);
+  if (regex) normalized.regex = regex;
+
+  const tags = toStringArray((entry as any).tags);
+  if (tags) normalized.tags = tags;
+
+  return normalized;
 }
 
 function parseMetadata(raw: string): NormalizedMetadataEntry[] | undefined {
@@ -68,6 +188,8 @@ function parseMetadata(raw: string): NormalizedMetadataEntry[] | undefined {
       return normalized.length ? normalized : undefined;
     }
     if (parsed && typeof parsed === "object") {
+      const directEntry = normalizeMetadataEntry(parsed);
+      if (directEntry) return [directEntry];
       const normalized = Object.entries(parsed).map(([id, value]) => normalizeMetadataEntry({ id, value })).filter((entry): entry is NormalizedMetadataEntry => Boolean(entry));
       return normalized.length ? normalized : undefined;
     }
