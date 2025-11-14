@@ -20,12 +20,6 @@ We intend to have a compatibility testing tool in the future, to easily check if
 
 Any class that extends the Node class is required to define its specification and its execution logic. Any packages can be used here as they will all be bundled with the source code when publishing.
 
-### Cleaning up the sample HttpClient node
-
-When you decide to remove the HttpClient node you should also cleanup its `axios` dependency. Keep in mind, that since the `hcloud-sdk` has it as a dependency it will stay in your `package-lock.json`.
-
-    npm uninstall axios
-
 ## Testing your nodes
 
 To test your nodes it is necessary to have a [helmut.cloud Agent](https://app.helmut.cloud/account/user/downloads) running locally. You should then go to [this URL](http://localhost:6968/api/agent/v1/modules/dev-wave/) and submit the root directory of this repository. Alternatively you can use the `link` command to do the same.

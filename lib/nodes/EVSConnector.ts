@@ -46,6 +46,37 @@ function sleep(ms: number) { return new Promise(r => setTimeout(r, ms)); }
 
 function makeClientJobId(): string { return `${Date.now()}-${Math.random().toString(36).slice(2)}`; }
 
+type NormalizedMetadataEntry = { id: string; value: string };
+
+function normalizeMetadataEntry(entry: any): NormalizedMetadataEntry | undefined {
+  if (!entry || typeof entry !== "object") return undefined;
+  const rawId = "id" in entry ? entry.id : ("name" in entry ? entry.name : undefined);
+  if (typeof rawId !== "string" && typeof rawId !== "number") return undefined;
+  const id = String(rawId).trim();
+  if (!id) return undefined;
+  const valueRaw = "value" in entry ? entry.value : undefined;
+  const value = valueRaw === undefined || valueRaw === null ? "" : String(valueRaw);
+  return { id, value };
+}
+
+function parseMetadata(raw: string): NormalizedMetadataEntry[] | undefined {
+  if (!raw) return undefined;
+  try {
+    const parsed = JSON.parse(raw);
+    if (Array.isArray(parsed)) {
+      const normalized = parsed.map(normalizeMetadataEntry).filter((entry): entry is NormalizedMetadataEntry => Boolean(entry));
+      return normalized.length ? normalized : undefined;
+    }
+    if (parsed && typeof parsed === "object") {
+      const normalized = Object.entries(parsed).map(([id, value]) => normalizeMetadataEntry({ id, value })).filter((entry): entry is NormalizedMetadataEntry => Boolean(entry));
+      return normalized.length ? normalized : undefined;
+    }
+  } catch {
+    return undefined;
+  }
+  return undefined;
+}
+
 export default class EVSConnector extends Node {
   specification = {
     specVersion: 3,
@@ -119,17 +150,7 @@ export default class EVSConnector extends Node {
     if (!filePath) throw new Error("File Path is required");
 
     // Prepare metadata
-    let metadata: any[] | undefined = undefined;
-    if (metadataRaw) {
-      try {
-        const parsed = JSON.parse(metadataRaw);
-        if (Array.isArray(parsed)) metadata = parsed;
-        else if (parsed && typeof parsed === "object") {
-          metadata = Object.entries(parsed).map(([k, v]) => ({ id: String(k), name: String(k), value: String(v ?? "") }));
-        }
-      } catch { /* ignore invalid metadata */ }
-    }
-
+    const metadata = parseMetadata(metadataRaw);
     // Create job
     const name = toJobNameFromPath(filePath);
     const clientJobId = makeClientJobId();
